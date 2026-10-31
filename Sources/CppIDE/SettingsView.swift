@@ -40,7 +40,7 @@ private struct EditorSettingsTab: View {
             Toggle("Show inlay hints (parameter names, inferred types)", isOn: $inlayHints)
             Toggle("Show Git blame for the current line", isOn: $inlineBlame)
             Toggle("Reopen the last project at launch", isOn: $reopenLast)
-            Text("func main() {\n\tfmt.Println(\"preview\")\n}")
+            Text("int main(void) {\n\tprintf(\"preview\\n\");\n}")
                 .font(.system(size: fontSize, design: .monospaced))
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
@@ -53,14 +53,31 @@ private struct EditorSettingsTab: View {
 
 private struct ToolsSettingsTab: View {
     @Environment(Workspace.self) private var workspace
+    @AppStorage(LanguageStandards.cKey) private var cStandard = LanguageStandards.default.c
+    @AppStorage(LanguageStandards.cxxKey) private var cxxStandard = LanguageStandards.default.cxx
 
     var body: some View {
         Form {
+            Section {
+                Picker("C standard", selection: $cStandard) {
+                    ForEach(LanguageStandards.cChoices, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("C++ standard", selection: $cxxStandard) {
+                    ForEach(LanguageStandards.cxxChoices, id: \.self) { Text($0).tag($0) }
+                }
+            } footer: {
+                Text("Used when compiling a single file and by clangd for files without compile_commands.json. "
+                     + "A -std= line in compile_flags.txt, or CMake's settings, take precedence.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .onChange(of: cStandard) { restartClangd() }
+            .onChange(of: cxxStandard) { restartClangd() }
             Section {
                 ToolPathRow(name: "clangd", hint: "xcode-select --install, or brew install llvm")
                 ToolPathRow(name: "lldb-dap", hint: "ships with Xcode (xcrun -f lldb-dap) or brew install llvm")
                 ToolPathRow(name: "cmake", hint: "brew install cmake")
                 ToolPathRow(name: "ninja", hint: "optional: brew install ninja (faster CMake builds)")
+                ToolPathRow(name: "clang", hint: "xcode-select --install")
                 ToolPathRow(name: "clang++", hint: "xcode-select --install")
             } footer: {
                 Text("Leave empty to search PATH, Homebrew (including keg-only LLVM) and xcrun.")
@@ -69,6 +86,13 @@ private struct ToolsSettingsTab: View {
             Button("Restart clangd") { Task { await workspace.restartLanguageServer() } }
                 .disabled(workspace.rootURL == nil)
         }
+    }
+}
+
+extension ToolsSettingsTab {
+    private func restartClangd() {
+        guard workspace.rootURL != nil else { return }
+        Task { await workspace.restartLanguageServer() }
     }
 }
 

@@ -518,6 +518,87 @@ private func eventually(_ attempts: Int = 60, every: Duration = .milliseconds(25
 }
 
 @MainActor
+@Suite struct WorkspaceCTests {
+    /// Just enough of Unity's API and output format (`file:line:test:PASS|FAIL: msg`).
+    static let unityHeader = """
+        #include <stdio.h>
+        static const char *unity_test;
+        static int unity_failed, unity_failures;
+        #define UNITY_BEGIN() (unity_failures = 0)
+        #define UNITY_END() (unity_failures)
+        #define RUN_TEST(fn) do { unity_test = #fn; unity_failed = 0; fn(); \\
+            if (!unity_failed) printf("%s:%d:%s:PASS\\n", __FILE__, __LINE__, #fn); } while (0)
+        #define TEST_ASSERT_EQUAL_INT(e, a) do { if ((e) != (a)) { \\
+            printf("%s:%d:%s:FAIL: Expected %d Was %d\\n", __FILE__, __LINE__, unity_test, (int)(e), (int)(a)); \\
+            unity_failed = 1; unity_failures++; return; } } while (0)
+
+        """
+
+    @Test(.enabled(if: hasCMake), .timeLimit(.minutes(3)))
+    func runsUnityTestsFromTheirFileAndMarksEachFunction() async throws {
+        let dir = try makeProject([
+            "CMakeLists.txt": """
+                cmake_minimum_required(VERSION 3.20)
+                project(cdemo LANGUAGES C)
+                add_executable(app src/main.c)
+                add_executable(test_math tests/test_math.c)
+                target_include_directories(test_math PRIVATE tests)
+                enable_testing()
+                add_test(NAME app_runs COMMAND app)
+                add_test(NAME math COMMAND test_math)
+                """,
+            "src/main.c": "#include <stdio.h>\nint main(void) {\n    puts(\"hi\");\n    return 0;\n}\n",
+            "src/util.h": "struct node { struct node *new; int class; };\n",
+            "tests/unity.h": Self.unityHeader,
+            "tests/test_math.c": """
+                #include "unity.h"
+
+                void test_add(void) {
+                    TEST_ASSERT_EQUAL_INT(3, 1 + 2);
+                }
+
+                void test_sub(void) {
+                    TEST_ASSERT_EQUAL_INT(1, 2 - 2);
+                }
+
+                int main(void) {
+                    UNITY_BEGIN();
+                    RUN_TEST(test_add);
+                    RUN_TEST(test_sub);
+                    return UNITY_END();
+                }
+
+                """,
+        ], flags: false)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let workspace = Workspace()
+        await workspace.openFolder(dir)
+        #expect(workspace.sourceDialect == .c)
+
+        // C-only snippets in a C project's header.
+        let header = try #require(workspace.openFile(dir.appendingPathComponent("src/util.h")))
+        header.text = "tstr" + header.text
+        let completions = await workspace.completions(in: header, at: 4).map(\.label)
+        #expect(completions.contains("tstruct"), "\(completions)")
+
+        workspace.build()
+        #expect(await eventually(600) { !workspace.isRunning })
+        #expect(workspace.output.contains("[build succeeded]"), "\(workspace.output)")
+
+        // ▶ on test_add runs only the ctest test built from tests/test_math.c, not app_runs.
+        let tests = try #require(workspace.openFile(dir.appendingPathComponent("tests/test_math.c")))
+        workspace.runTest(named: "test_add", in: tests)
+        #expect(await eventually(240) { !workspace.isRunning })
+        #expect(workspace.testReport.tests.map(\.name) == ["math"], "\(workspace.output)")
+        #expect(workspace.testReport.failed == 1)
+        #expect(workspace.testStatuses["test_add"] == .passed)
+        #expect(workspace.testStatuses["test_sub"] == .failed)
+        #expect(workspace.testReport.tests.first?.output.contains("test_sub:FAIL: Expected 1 Was 0") == true)
+        await workspace.shutdown()
+    }
+}
+
+@MainActor
 @Suite struct WorkspaceGitTests {
     @Test(.enabled(if: CppIDECore.ToolLocator.find("git") != nil), .timeLimit(.minutes(1)))
     func tracksBranchStatusesAndBases() async throws {

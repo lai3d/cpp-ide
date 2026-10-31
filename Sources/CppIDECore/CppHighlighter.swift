@@ -134,9 +134,10 @@ public enum SourceKind {
     public static func isHeader(_ url: URL) -> Bool { headerExtensions.contains(url.pathExtension.lowercased()) }
 
     /// LSP languageId: clangd mostly goes by the compile command, but uses this for fallbacks.
-    public static func languageID(for url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "c": "c"
+    /// The LSP `languageId`; headers are C in a C-only project (`dialect` `.c`), else C++.
+    public static func languageID(for url: URL, dialect: SourceDialect = .mixed) -> String {
+        if dialect.isC(url) { return "c" }
+        return switch url.pathExtension.lowercased() {
         case "m": "objective-c"
         case "mm": "objective-cpp"
         case "cu", "cuh": "cuda-cpp"
