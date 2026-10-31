@@ -40,7 +40,7 @@ The editor, LSP/DAP plumbing, Git, terminal, search, multi-window and session fe
 | # | Item | Notes | Est. |
 |---|---|---|---|
 | 2.1 | ✅ First release | Tagged `v0.1.0` (2026-11-01); release workflow publishes `CppIDE.zip`; verified the bundled app opens a window when launched with a folder (`NSTreatUnknownArgumentsAsOpen`) | 0.3h |
-| 2.2 | 🚧 IDE Toolbox | Catalog entry in [ide-toolbox#6](https://github.com/lai3d/ide-toolbox/pull/6); shared recents already written | 0.2h |
+| 2.2 | 🚧 IDE Toolbox | Catalog entry in [ide-toolbox#5](https://github.com/lai3d/ide-toolbox/pull/5); shared recents already written | 0.2h |
 
 **User must do manually** (duration outside Claude's control): Apple Developer Program enrollment,
 Developer ID certificate, notarization credentials — only needed to ship a signed/notarized build to others.
