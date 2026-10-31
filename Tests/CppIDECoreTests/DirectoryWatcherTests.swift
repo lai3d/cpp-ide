@@ -13,9 +13,9 @@ import Testing
         let watcher = try #require(DirectoryWatcher(url: dir.canonicalFileURL) { continuation.yield($0) })
         defer { watcher.stop() }
         try await Task.sleep(for: .milliseconds(300))  // let the stream start
-        try "package x\n".write(to: dir.appendingPathComponent("new.go"), atomically: true, encoding: .utf8)
+        try "int x;\n".write(to: dir.appendingPathComponent("new.cpp"), atomically: true, encoding: .utf8)
 
-        for await paths in stream where paths.contains(where: { $0.hasSuffix("/new.go") }) {
+        for await paths in stream where paths.contains(where: { $0.hasSuffix("/new.cpp") }) {
             return  // success
         }
     }

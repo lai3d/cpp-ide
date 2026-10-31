@@ -8,40 +8,40 @@ import Testing
     }
 
     @Test func appliesEditsBackToFront() {
-        let text = "package main\nfunc  main(){\n}\n"
+        let text = "// c\nvoid  main(){\n}\n"
         let result = TextEdit.apply([
-            edit(1, 4, 1, 6, " "),       // "func  main" -> "func main"
+            edit(1, 4, 1, 6, " "),       // "void  main" -> "void main"
             edit(1, 12, 1, 12, " "),     // "(){" -> "() {"
             edit(0, 0, 0, 0, "// x\n"),  // insert at top
         ], to: text)
-        #expect(result == "// x\npackage main\nfunc main() {\n}\n")
+        #expect(result == "// x\n// c\nvoid main() {\n}\n")
     }
 
     @Test func parsesWorkspaceEditForms() {
         let range: JSONValue = ["start": ["line": 0, "character": 0], "end": ["line": 0, "character": 3]]
-        let changes = WorkspaceEdit.parse(["changes": ["file:///a.go": [["range": range, "newText": "x"]]]])
-        #expect(changes.changes["file:///a.go"]?.first?.newText == "x")
+        let changes = WorkspaceEdit.parse(["changes": ["file:///a.cpp": [["range": range, "newText": "x"]]]])
+        #expect(changes.changes["file:///a.cpp"]?.first?.newText == "x")
         let documentChanges = WorkspaceEdit.parse(["documentChanges": [
-            ["textDocument": ["uri": "file:///b.go", "version": 3], "edits": [["range": range, "newText": "y"]]],
-            ["kind": "create", "uri": "file:///c.go"],
+            ["textDocument": ["uri": "file:///b.cpp", "version": 3], "edits": [["range": range, "newText": "y"]]],
+            ["kind": "create", "uri": "file:///c.cpp"],
         ]])
-        #expect(documentChanges.changes.keys.sorted() == ["file:///b.go"])
-        #expect(documentChanges.creates == ["file:///c.go"])
+        #expect(documentChanges.changes.keys.sorted() == ["file:///b.cpp"])
+        #expect(documentChanges.creates == ["file:///c.cpp"])
     }
 
     @Test func parsesCodeActionsAndCommands() {
         let actions = CodeAction.parseAll([
-            ["title": "Organize Imports", "kind": "source.organizeImports",
-             "edit": ["changes": ["file:///a.go": []]]],
-            ["title": "Run test", "command": "gopls.test", "arguments": []],
+            ["title": "insert ';'", "kind": "quickfix",
+             "edit": ["changes": ["file:///a.cpp": []]]],
+            ["title": "Apply fix", "command": "clangd.applyFix", "arguments": []],
         ])
-        #expect(actions.map(\.title) == ["Organize Imports", "Run test"])
+        #expect(actions.map(\.title) == ["insert ';'", "Apply fix"])
         #expect(actions[0].edit != nil && actions[0].command == nil)
-        #expect(actions[1].command?["command"]?.stringValue == "gopls.test")
+        #expect(actions[1].command?["command"]?.stringValue == "clangd.applyFix")
     }
 
     @Test func computesMinimalReplacement() {
-        let r = TextDiff.replacement(from: "func  main() {}", to: "func main() {}")
+        let r = TextDiff.replacement(from: "void  main() {}", to: "void main() {}")
         #expect(r?.range == NSRange(location: 5, length: 1) && r?.text == "")
         #expect(TextDiff.replacement(from: "same", to: "same") == nil)
         let tail = TextDiff.replacement(from: "a", to: "ab")
@@ -51,48 +51,43 @@ import Testing
     }
 }
 
-@Suite struct GoplsFormattingTests {
-    @Test(.enabled(if: ToolLocator.find("gopls") != nil), .timeLimit(.minutes(1)))
-    func organizesImportsAndFormats() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-fmt-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        try "module example.com/t\n\ngo 1.22\n".write(to: dir.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
-        let source = "package main\n\nimport \"os\"\n\nfunc main(){\nfmt.Println( strings.ToUpper(\"x\") )\n}\n"
-        let file = dir.appendingPathComponent("main.go")
-        try source.write(to: file, atomically: true, encoding: .utf8)
-        let uri = JSONValue.string(file.absoluteString)
+@Suite struct ClangdFormattingTests {
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
+    func formatsAndOffersFixIts() async throws {
+        let source = "int main(){\nint x=1\nreturn x;}\n"
+        let session = try ClangdSession(files: ["main.cpp": source])
+        let (stream, continuation) = AsyncStream<JSONValue>.makeStream()
+        try await session.start(capabilities: ["textDocument": [
+            "publishDiagnostics": ["codeActionsInline": true],
+            "codeAction": ["codeActionLiteralSupport": ["codeActionKind": ["valueSet": ["quickfix"]]]],
+        ]]) { method, params in
+            if method == "textDocument/publishDiagnostics", !(params["diagnostics"]?.arrayValue ?? []).isEmpty {
+                continuation.yield(params)
+            }
+        }
+        try session.open("main.cpp")
+        let uri = session.uri("main.cpp")
 
-        let client = LSPClient()
-        try client.start(executable: try #require(ToolLocator.find("gopls")),
-                         environment: ToolLocator.environment(), currentDirectory: dir)
-        _ = try await client.request("initialize", params: [
-            "processId": .int(Int(getpid())), "rootUri": .string(dir.absoluteString),
-            "capabilities": ["textDocument": ["codeAction": ["codeActionLiteralSupport": [
-                "codeActionKind": ["valueSet": ["source.organizeImports"]]]]]],
-        ])
-        try client.notify("initialized", params: [:])
-        try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": uri, "languageId": "go", "version": 1, "text": .string(source)],
-        ])
-
-        let actions = CodeAction.parseAll(try await client.request("textDocument/codeAction", params: [
+        // Missing ';' after `int x=1`: clangd offers the fix-it as a quick fix.
+        var iterator = stream.makeAsyncIterator()
+        let published = try #require(await iterator.next())
+        let actions = CodeAction.parseAll(try await session.client.request("textDocument/codeAction", params: [
             "textDocument": ["uri": uri],
-            "range": ["start": ["line": 0, "character": 0], "end": ["line": 0, "character": 0]],
-            "context": ["diagnostics": [], "only": ["source.organizeImports"]],
+            "range": ["start": ["line": 1, "character": 0], "end": ["line": 1, "character": 8]],
+            "context": ["diagnostics": published["diagnostics"] ?? [], "only": ["quickfix"]],
         ]))
-        let organize = try #require(actions.first { $0.kind == "source.organizeImports" })
-        let organized = TextEdit.apply(organize.edit?.changes[file.absoluteString] ?? [], to: source)
-        #expect(organized.contains("\"fmt\"") && organized.contains("\"strings\"") && !organized.contains("\"os\""))
+        let fix = try #require(actions.first { $0.title.contains(";") })
+        let fixed = TextEdit.apply(fix.edit?.changes[session.url("main.cpp").absoluteString] ?? [], to: source)
+        #expect(fixed.contains("int x=1;"))
 
-        try client.notify("textDocument/didChange", params: [
-            "textDocument": ["uri": uri, "version": 2], "contentChanges": [["text": .string(organized)]],
+        try session.client.notify("textDocument/didChange", params: [
+            "textDocument": ["uri": uri, "version": 2], "contentChanges": [["text": .string(fixed)]],
         ])
-        let formatEdits = (try await client.request("textDocument/formatting", params: [
-            "textDocument": ["uri": uri], "options": ["tabSize": 4, "insertSpaces": false],
+        let formatEdits = (try await session.client.request("textDocument/formatting", params: [
+            "textDocument": ["uri": uri], "options": ["tabSize": 4, "insertSpaces": true],
         ])).arrayValue?.compactMap(TextEdit.parse) ?? []
-        let formatted = TextEdit.apply(formatEdits, to: organized)
-        #expect(formatted.contains("func main() {\n\tfmt.Println(strings.ToUpper(\"x\"))\n}"))
-        await client.shutdown()
+        let formatted = TextEdit.apply(formatEdits, to: fixed)
+        #expect(formatted.contains("int main() {\n  int x = 1;\n  return x;\n}"))  // LLVM style (no .clang-format)
+        await session.shutdown()
     }
 }

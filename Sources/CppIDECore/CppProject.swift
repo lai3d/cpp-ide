@@ -158,7 +158,7 @@ public struct CppProject: Sendable {
 
     /// Compiles one source file (plus nothing else) into `build/<name>` with debug info.
     public func compileSingleFileCommand(source: String, cCompiler: URL, cxxCompiler: URL) -> (command: Command, output: URL) {
-        let url = URL(fileURLWithPath: source, relativeTo: root).standardizedFileURL
+        let url = (source.hasPrefix("/") ? URL(fileURLWithPath: source) : root.appendingPathComponent(source)).standardizedFileURL
         let ext = url.pathExtension.lowercased()
         let output = buildDirectory.appendingPathComponent(url.deletingPathExtension().lastPathComponent)
         let isC = ext == "c"
@@ -187,7 +187,9 @@ public struct CppProject: Sendable {
                 let name = ((target as NSString).lastPathComponent as NSString).deletingPathExtension
                 return buildDirectory.appendingPathComponent(name)
             }
-            let url = URL(fileURLWithPath: (target as NSString).expandingTildeInPath, relativeTo: root).standardizedFileURL
+            let expanded = (target as NSString).expandingTildeInPath
+            let url = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded)
+                : root.appendingPathComponent(expanded).standardizedFileURL
             return fm.isExecutableFile(atPath: url.path) ? url : nil
         }
     }

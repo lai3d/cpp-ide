@@ -362,7 +362,11 @@ public struct FoldRegion: Sendable, Hashable {
         (result.arrayValue ?? []).compactMap { value in
             guard let start = value["startLine"]?.intValue, let end = value["endLine"]?.intValue, end > start else { return nil }
             return FoldRegion(startLine: start, startCharacter: value["startCharacter"]?.intValue,
-                              endLine: end, endCharacter: value["endCharacter"]?.intValue,
+                              endLine: end,
+                              // LSP omits zero-valued fields: with a start column, a missing end column is 0
+                              // (clangd does this for a `}` in column 0).
+                              endCharacter: value["endCharacter"]?.intValue
+                                ?? (value["startCharacter"]?.intValue != nil ? 0 : nil),
                               kind: value["kind"]?.stringValue)
         }
     }

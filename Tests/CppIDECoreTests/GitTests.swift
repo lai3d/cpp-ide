@@ -4,10 +4,10 @@ import Testing
 
 @Suite struct GitTests {
     @Test func parsesPorcelainStatus() {
-        let porcelain = " M a.go\0A  b.go\0?? new.go\0R  newname.go\0oldname.go\0 D gone.go\0UU c.go\0"
+        let porcelain = " M a.cpp\0A  b.cpp\0?? new.cpp\0R  newname.cpp\0oldname.cpp\0 D gone.cpp\0UU c.cpp\0"
         let statuses = Git.parseStatus(porcelain, root: "/r")
-        #expect(statuses == ["/r/a.go": .modified, "/r/b.go": .added, "/r/new.go": .untracked,
-                             "/r/newname.go": .renamed, "/r/gone.go": .deleted, "/r/c.go": .conflicted])
+        #expect(statuses == ["/r/a.cpp": .modified, "/r/b.cpp": .added, "/r/new.cpp": .untracked,
+                             "/r/newname.cpp": .renamed, "/r/gone.cpp": .deleted, "/r/c.cpp": .conflicted])
     }
 
     @Test func classifiesLineChanges() {
@@ -26,25 +26,25 @@ import Testing
         defer { try? FileManager.default.removeItem(at: base) }
         let dir = base.canonicalFileURL
         Git.run(["init", "-q", "-b", "trunk"], in: dir)
-        try "package main\n".write(to: dir.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+        try "int main();\n".write(to: dir.appendingPathComponent("main.cpp"), atomically: true, encoding: .utf8)
         Git.run(["add", "."], in: dir)
         Git.run(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"], in: dir)
-        try "package main\n\nfunc main() {}\n".write(to: dir.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
-        try "package main\n".write(to: dir.appendingPathComponent("extra.go"), atomically: true, encoding: .utf8)
+        try "int main();\n\nint main() { return 0; }\n".write(to: dir.appendingPathComponent("main.cpp"), atomically: true, encoding: .utf8)
+        try "int main();\n".write(to: dir.appendingPathComponent("extra.cpp"), atomically: true, encoding: .utf8)
 
         #expect(Git.topLevel(of: dir)?.path == dir.path)
         #expect(Git.currentBranch(in: dir) == "trunk")
         let statuses = Git.status(in: dir)
-        #expect(statuses[dir.appendingPathComponent("main.go").path] == .modified)
-        #expect(statuses[dir.appendingPathComponent("extra.go").path] == .untracked)
-        #expect(Git.headContents(of: dir.appendingPathComponent("main.go"), topLevel: dir) == "package main\n")
-        #expect(Git.headContents(of: dir.appendingPathComponent("extra.go"), topLevel: dir) == nil)
+        #expect(statuses[dir.appendingPathComponent("main.cpp").path] == .modified)
+        #expect(statuses[dir.appendingPathComponent("extra.cpp").path] == .untracked)
+        #expect(Git.headContents(of: dir.appendingPathComponent("main.cpp"), topLevel: dir) == "int main();\n")
+        #expect(Git.headContents(of: dir.appendingPathComponent("extra.cpp"), topLevel: dir) == nil)
 
         // Blame the buffer: line 0 is committed, line 2 is new (uncommitted).
-        let buffer = "package main\n\nfunc main() {}\n"
-        let committed = try #require(Git.blame(file: dir.appendingPathComponent("main.go"), line: 0, contents: buffer, topLevel: dir))
+        let buffer = "int main();\n\nint main() { return 0; }\n"
+        let committed = try #require(Git.blame(file: dir.appendingPathComponent("main.cpp"), line: 0, contents: buffer, topLevel: dir))
         #expect(committed.author == "t" && committed.summary == "init" && !committed.isUncommitted)
-        let fresh = try #require(Git.blame(file: dir.appendingPathComponent("main.go"), line: 2, contents: buffer, topLevel: dir))
+        let fresh = try #require(Git.blame(file: dir.appendingPathComponent("main.cpp"), line: 2, contents: buffer, topLevel: dir))
         #expect(fresh.isUncommitted)
     }
 }
@@ -68,8 +68,8 @@ import Testing
 
 @Suite struct GitChangeTests {
     @Test func parsesIndexAndWorkTreeColumns() {
-        let changes = GitChange.parse("MM a.go\0A  b.go\0 M c.go\0?? d.go\0", root: "/r")
-        #expect(changes.map(\.path) == ["/r/a.go", "/r/b.go", "/r/c.go", "/r/d.go"])
+        let changes = GitChange.parse("MM a.cpp\0A  b.cpp\0 M c.cpp\0?? d.cpp\0", root: "/r")
+        #expect(changes.map(\.path) == ["/r/a.cpp", "/r/b.cpp", "/r/c.cpp", "/r/d.cpp"])
         #expect(changes.map(\.isStaged) == [true, true, false, false])
         #expect(changes.map(\.hasUnstagedChanges) == [true, false, true, true])
         #expect(changes[3].isUntracked)
@@ -84,7 +84,7 @@ import Testing
         Git.run(["init", "-q", "-b", "main"], in: dir)
         Git.run(["config", "user.name", "Tester"], in: dir)
         Git.run(["config", "user.email", "t@example.com"], in: dir)
-        let a = dir.appendingPathComponent("a.go"), b = dir.appendingPathComponent("b.go")
+        let a = dir.appendingPathComponent("a.cpp"), b = dir.appendingPathComponent("b.cpp")
         try "package a\n".write(to: a, atomically: true, encoding: .utf8)
         try "package b\n".write(to: b, atomically: true, encoding: .utf8)
         #expect(Git.stage([a.path, b.path], in: dir) == nil)

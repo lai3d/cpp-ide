@@ -44,7 +44,14 @@ public struct Snippet: Sendable, Hashable {
                     return
                 } else if c == "$", i + 1 < chars.count, chars[i + 1].isNumber {
                     i += 1
-                    if let n = readNumber(), stops[n] == nil { stops[n] = NSRange(location: length, length: 0) }
+                    if let n = readNumber() {
+                        if let first = stops[n] {
+                            // A repeated stop mirrors the first one's text (`for (int i = 0; i < n; ++i)`).
+                            (output as NSString).substring(with: first).forEach(append)
+                        } else {
+                            stops[n] = NSRange(location: length, length: 0)
+                        }
+                    }
                 } else if c == "$", i + 1 < chars.count, chars[i + 1] == "{" {
                     i += 2
                     guard let n = readNumber() else { append("$"); continue }

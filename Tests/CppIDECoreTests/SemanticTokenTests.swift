@@ -14,46 +14,32 @@ import Testing
         ])
     }
 
-    @Test(.enabled(if: ToolLocator.find("gopls") != nil), .timeLimit(.minutes(1)))
-    func goplsSemanticTokens() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-sem-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        try "module example.com/t\n\ngo 1.22\n".write(to: dir.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
-        let source = "package main\n\nimport \"fmt\"\n\ntype Order struct{ ID int }\n\nconst Max = 3\n\nfunc show(o Order) { fmt.Println(o.ID, Max) }\n\nfunc main() { show(Order{}) }\n"
-        let file = dir.appendingPathComponent("main.go")
-        try source.write(to: file, atomically: true, encoding: .utf8)
-
-        let client = LSPClient()
-        try client.start(executable: try #require(ToolLocator.find("gopls")),
-                         environment: ToolLocator.environment(), currentDirectory: dir)
-        let initialized = try await client.request("initialize", params: [
-            "processId": .int(Int(getpid())), "rootUri": .string(dir.absoluteString),
-            "capabilities": ["textDocument": ["semanticTokens": [
-                "requests": ["full": true], "formats": ["relative"],
-                "tokenTypes": .array(SemanticTokenLegend.clientTypes.map(JSONValue.string)),
-                "tokenModifiers": .array(SemanticTokenLegend.clientModifiers.map(JSONValue.string)),
-            ]]],
-            "initializationOptions": GoplsSettings.default,
-        ])
-        let legend = try #require(SemanticTokenLegend(initializeResult: initialized))
-        try client.notify("initialized", params: [:])
-        try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": .string(file.absoluteString), "languageId": "go", "version": 1, "text": .string(source)],
-        ])
-        let tokens = legend.decode(try await client.request("textDocument/semanticTokens/full", params: [
-            "textDocument": ["uri": .string(file.absoluteString)],
-        ]))
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
+    func clangdSemanticTokens() async throws {
+        let source = "namespace shop {\nstruct Order { int id; };\n}\n\n#define MAX 3\nconstexpr int limit = 5;\n\nint show(shop::Order o) { return o.id + MAX + limit; }\n"
+        let session = try ClangdSession(files: ["main.cpp": source])
+        try await session.start(capabilities: ["textDocument": ["semanticTokens": [
+            "requests": ["full": true], "formats": ["relative"],
+            "tokenTypes": .array(SemanticTokenLegend.clientTypes.map(JSONValue.string)),
+            "tokenModifiers": .array(SemanticTokenLegend.clientModifiers.map(JSONValue.string)),
+        ]]])
+        let legend = try #require(SemanticTokenLegend(initializeResult: session.initializeResult))
+        try session.open("main.cpp")
+        let raw = try await session.poll("textDocument/semanticTokens/full", ["textDocument": ["uri": session.uri("main.cpp")]]) {
+            !legend.decode($0).isEmpty
+        }
+        let tokens = legend.decode(raw)
         let lines = source.components(separatedBy: "\n")
         func text(_ t: SemanticToken) -> String {
-            let line = lines[t.line] as NSString
-            return line.substring(with: NSRange(location: t.start, length: t.length))
+            (lines[t.line] as NSString).substring(with: NSRange(location: t.start, length: t.length))
         }
         let byText = Dictionary(tokens.map { (text($0) + "@\($0.line)", $0) }, uniquingKeysWith: { a, _ in a })
-        #expect(byText["fmt@8"]?.type == "namespace")
-        #expect(byText["Order@8"]?.type == "type")
-        #expect(byText["o@8"]?.type == "parameter")
-        #expect(byText["Max@8"]?.modifiers.contains("readonly") == true)
-        await client.shutdown()
+        #expect(byText["shop@7"]?.type == "namespace")
+        #expect(byText["Order@7"]?.type == "class" || byText["Order@7"]?.type == "struct")
+        #expect(byText["o@7"]?.type == "parameter")
+        #expect(byText["id@7"]?.type == "property")
+        #expect(byText["MAX@7"]?.type == "macro")
+        #expect(byText["limit@7"]?.modifiers.contains("readonly") == true)
+        await session.shutdown()
     }
 }

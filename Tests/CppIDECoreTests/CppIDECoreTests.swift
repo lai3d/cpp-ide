@@ -52,82 +52,88 @@ import Testing
     }
 }
 
-@Suite struct GoHighlighterTests {
-    private func kinds(_ source: String) -> [(String, GoTokenKind)] {
+@Suite struct CppHighlighterTests {
+    private func kinds(_ source: String) -> [(String, TokenKind)] {
         let ns = source as NSString
-        return GoHighlighter.tokenize(source).map { (ns.substring(with: $0.range), $0.kind) }
+        return CppHighlighter.tokenize(source).map { (ns.substring(with: $0.range), $0.kind) }
     }
 
     @Test func classifiesTokens() {
-        let tokens = kinds(#"func main() { x := len("hi // no") + 42 } // done"#)
-        #expect(tokens.map(\.0) == ["func", "main", "len", #""hi // no""#, "42", "// done"])
-        #expect(tokens.map(\.1) == [.keyword, .function, .builtin, .string, .number, .comment])
+        let tokens = kinds(#"int main() { auto x = sizeof("hi // no") + 42; return x; } // done"#)
+        #expect(tokens.map(\.0) == ["int", "main", "auto", "sizeof", #""hi // no""#, "42", "return", "// done"])
+        #expect(tokens.map(\.1) == [.type, .function, .keyword, .keyword, .string, .number, .keyword, .comment])
     }
 
-    @Test func handlesRawStringsAndTypes() {
-        let tokens = kinds("var s string = `a\n\"b\"`")
-        #expect(tokens.map(\.1) == [.keyword, .type, .string])
+    @Test func handlesRawStringsAndCharLiterals() {
+        let tokens = kinds("auto s = R\"x(a \"quoted\" )\" b)x\"; char c = '\\''; bool t = nullptr;")
+        #expect(tokens.contains { $0.0 == "R\"x(a \"quoted\" )\" b)x\"" && $0.1 == .string })
+        #expect(tokens.contains { $0.0 == "'\\''" && $0.1 == .string })
+        #expect(tokens.contains { $0.0 == "nullptr" && $0.1 == .builtin })
+        #expect(!tokens.contains { $0.0 == "quoted" })  // inside the raw string
+    }
+
+    @Test func highlightsPreprocessorAndIncludePaths() {
+        let tokens = kinds("#include <vector>\n  #  define MAX 10\n#include \"greeter.h\"\nint v;")
+        #expect(tokens.map(\.0) == ["#include", "<vector>", "  #  define", "10", "#include", "\"greeter.h\"", "int"])
+        #expect(tokens.map(\.1) == [.preprocessor, .string, .preprocessor, .number, .preprocessor, .string, .type])
+    }
+
+    @Test func numbersWithSeparatorsAndSuffixes() {
+        let tokens = kinds("x = 1'000'000ull + 0xFFu + 3.5f + 1e-3 + 0b1010;")
+        #expect(tokens.filter { $0.1 == .number }.map(\.0) == ["1'000'000ull", "0xFFu", "3.5f", "1e-3", "0b1010"])
     }
 
     @Test func highlightsUnterminatedBlockComment() {
         #expect(kinds("x /* open").last?.1 == .comment)
+    }
+
+    @Test func classifiesSourceFiles() {
+        #expect(SourceKind.isSource(URL(fileURLWithPath: "/p/a.cpp")))
+        #expect(SourceKind.isSource(URL(fileURLWithPath: "/p/a.HPP")))
+        #expect(SourceKind.isHeader(URL(fileURLWithPath: "/p/a.h")))
+        #expect(!SourceKind.isSource(URL(fileURLWithPath: "/p/CMakeLists.txt")))
+        #expect(SourceKind.languageID(for: URL(fileURLWithPath: "/p/a.c")) == "c")
+        #expect(SourceKind.languageID(for: URL(fileURLWithPath: "/p/a.h")) == "cpp")
+        #expect(SourceKind.languageID(for: URL(fileURLWithPath: "/p/a.mm")) == "objective-cpp")
+        #expect(SourceKind.isBuildInput("/p/build/compile_commands.json"))
     }
 }
 
 @Suite struct DiagnosticTests {
     @Test func parsesPublishDiagnostics() throws {
         let params: JSONValue = [
-            "uri": "file:///tmp/main.go",
+            "uri": "file:///tmp/main.cpp",
             "diagnostics": [
                 ["range": ["start": ["line": 3, "character": 1], "end": ["line": 3, "character": 5]],
-                 "severity": 1, "message": "undefined: foo", "source": "compiler"],
+                 "severity": 1, "message": "use of undeclared identifier 'foo'", "source": "compiler"],
                 ["range": ["start": ["line": 0, "character": 0], "end": ["line": 0, "character": 1]],
                  "severity": 2, "message": "warn"],
             ],
         ]
         let result = try #require(Diagnostic.parsePublish(params))
-        #expect(result.uri == "file:///tmp/main.go")
-        #expect(result.diagnostics.map(\.message) == ["warn", "undefined: foo"])  // sorted by position
+        #expect(result.uri == "file:///tmp/main.cpp")
+        #expect(result.diagnostics.map(\.message) == ["warn", "use of undeclared identifier 'foo'"])  // sorted by position
         #expect(result.diagnostics[1].severity == .error)
         #expect(result.diagnostics[1].start == TextPosition(line: 3, character: 1))
     }
 }
 
-/// End-to-end check against a real gopls (skipped when gopls isn't installed).
-@Suite struct GoplsIntegrationTests {
-    @Test(.enabled(if: ToolLocator.find("gopls") != nil), .timeLimit(.minutes(1)))
+/// End-to-end check against a real clangd (skipped when clangd isn't installed).
+@Suite struct ClangdIntegrationTests {
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
     func publishesDiagnosticsForBrokenCode() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        try "module example.com/t\n\ngo 1.22\n".write(to: dir.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
-        let source = "package main\n\nfunc main() {\n\tundefinedThing()\n}\n"
-        let file = dir.appendingPathComponent("main.go")
-        try source.write(to: file, atomically: true, encoding: .utf8)
-
+        let session = try ClangdSession(files: ["main.cpp": "int main() {\n    undefinedThing();\n}\n"])
         let (stream, continuation) = AsyncStream<[Diagnostic]>.makeStream()
-        let client = LSPClient()
-        client.onNotification = { method, params in
+        try await session.start { method, params in
             if method == "textDocument/publishDiagnostics",
                let published = Diagnostic.parsePublish(params), !published.diagnostics.isEmpty {
                 continuation.yield(published.diagnostics)
             }
         }
-        try client.start(executable: try #require(ToolLocator.find("gopls")),
-                         environment: ToolLocator.environment(), currentDirectory: dir)
-        _ = try await client.request("initialize", params: [
-            "processId": .int(Int(getpid())),
-            "rootUri": .string(dir.absoluteString),
-            "capabilities": [:],
-        ])
-        try client.notify("initialized", params: [:])
-        try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": .string(file.absoluteString), "languageId": "go", "version": 1, "text": .string(source)],
-        ])
-
+        try session.open("main.cpp")
         var iterator = stream.makeAsyncIterator()
         let diagnostics = try #require(await iterator.next())
-        #expect(diagnostics.contains { $0.message.contains("undefinedThing") && $0.start.line == 3 })
-        await client.shutdown()
+        #expect(diagnostics.contains { $0.message.contains("undefinedThing") && $0.start.line == 1 && $0.severity == .error })
+        await session.shutdown()
     }
 }

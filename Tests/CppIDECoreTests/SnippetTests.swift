@@ -28,10 +28,19 @@ import Testing
         #expect(s.stops.last == NSRange(location: (s.text as NSString).length, length: 0))
     }
 
+    @Test func repeatedStopsMirrorTheFirst() {
+        let fori = Snippet.parse(CppSnippets.all.first { $0.trigger == "fori" }!.body)
+        #expect(fori.text == "for (int i = 0; i < n; ++i) {\n\t\n}")
+        let guardSnippet = Snippet.parse(CppSnippets.all.first { $0.trigger == "guard" }!.body)
+        #expect(guardSnippet.text.hasPrefix("#ifndef HEADER_H\n#define HEADER_H\n"))
+        #expect(guardSnippet.text.hasSuffix("#endif // HEADER_H"))
+    }
+
     @Test func builtInSnippetsMatchTriggers() {
-        #expect(GoSnippets.completions(matching: "iferr").map(\.label) == ["iferr"])
-        #expect(GoSnippets.completions(matching: "fo").map(\.label).contains("fori"))
-        #expect(GoSnippets.completions(matching: "x").isEmpty)
-        #expect(GoSnippets.all.allSatisfy { !Snippet.parse($0.body).stops.isEmpty })
+        #expect(CppSnippets.completions(matching: "fori").map(\.label) == ["fori"])
+        #expect(CppSnippets.completions(matching: "fo").map(\.label).contains("forr"))
+        #expect(CppSnippets.completions(matching: "x").isEmpty)
+        #expect(CppSnippets.all.allSatisfy { !Snippet.parse($0.body).stops.isEmpty })
+        #expect(Set(CppSnippets.all.map(\.trigger)).count == CppSnippets.all.count)  // unique triggers
     }
 }

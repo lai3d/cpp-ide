@@ -106,6 +106,12 @@ final class DebugSession {
 
     /// Evaluates an expression in the selected frame (nil unless paused).
     func evaluate(_ expression: String, context: String = "hover") async -> String? {
+        // lldb-dap's hover context only resolves variable paths; fall back to a full expression.
+        if context == "hover", let value = await evaluateOnce(expression, context: context) { return value }
+        return await evaluateOnce(expression, context: context == "hover" ? "watch" : context)
+    }
+
+    private func evaluateOnce(_ expression: String, context: String) async -> String? {
         guard state == .stopped, let frame = selectedFrameID,
               let body = try? await client.request("evaluate", arguments: [
                   "expression": .string(expression), "frameId": .int(frame), "context": .string(context),

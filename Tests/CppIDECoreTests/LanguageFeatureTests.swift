@@ -77,95 +77,100 @@ import Testing
     }
 }
 
-@Suite struct GoIdentifierTests {
+@Suite struct IdentifierTests {
     @Test func findsCallStart() {
         let text = "\tfmt.Printf(\"%d\", len(xs), " as NSString
-        #expect(GoIdentifier.callStart(in: text, before: text.length) == 1)  // fmt.Printf, skipping len(xs)
+        #expect(Identifier.callStart(in: text, before: text.length) == 1)  // fmt.Printf, skipping len(xs)
         let inner = "x := strings.ToUpper(s.Trim(" as NSString
-        #expect(GoIdentifier.callStart(in: inner, before: inner.length) == 21)  // s.Trim
-        #expect(GoIdentifier.callStart(in: "a + b" as NSString, before: 5) == nil)
+        #expect(Identifier.callStart(in: inner, before: inner.length) == 21)  // s.Trim
+        #expect(Identifier.callStart(in: "a + b" as NSString, before: 5) == nil)
     }
 
     @Test func findsPrefixAndWords() {
         let text = "\tfmt.Prin x1 42" as NSString
-        #expect(GoIdentifier.prefixStart(in: text, before: 9) == 5)  // "Prin"
-        #expect(GoIdentifier.prefixStart(in: text, before: 5) == 5)  // right after "."
-        #expect(GoIdentifier.wordRange(in: text, at: 2) == NSRange(location: 1, length: 3))  // "fmt"
-        #expect(GoIdentifier.wordRange(in: text, at: 4) == nil)  // "."
-        #expect(GoIdentifier.wordRange(in: text, at: 11) == NSRange(location: 10, length: 2))  // "x1"
-        #expect(GoIdentifier.wordRange(in: text, at: 13) == nil)  // number literal
+        #expect(Identifier.prefixStart(in: text, before: 9) == 5)  // "Prin"
+        #expect(Identifier.prefixStart(in: text, before: 5) == 5)  // right after "."
+        #expect(Identifier.wordRange(in: text, at: 2) == NSRange(location: 1, length: 3))  // "fmt"
+        #expect(Identifier.wordRange(in: text, at: 4) == nil)  // "."
+        #expect(Identifier.wordRange(in: text, at: 11) == NSRange(location: 10, length: 2))  // "x1"
+        #expect(Identifier.wordRange(in: text, at: 13) == nil)  // number literal
     }
 }
 
-/// End-to-end checks against a real gopls (skipped when gopls isn't installed).
-@Suite struct GoplsLanguageFeatureTests {
+/// End-to-end checks against a real clangd (skipped when clangd isn't installed).
+@Suite struct ClangdLanguageFeatureTests {
     static let source = """
-        package main
+        #include <string>
 
-        import "fmt"
+        int helper() { return 1; }
 
-        func helper() int { return 1 }
-
-        func main() {
-        \tfmt.Println(helper())
-        \tfmt.Pri
+        int main() {
+            std::string name = "x";
+            name.append("y");
+            name.app
+            return helper();
         }
 
         """
 
-    @Test(.enabled(if: ToolLocator.find("gopls") != nil), .timeLimit(.minutes(1)))
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
     func completionHoverAndDefinition() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        try "module example.com/t\n\ngo 1.22\n".write(to: dir.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
-        let file = dir.appendingPathComponent("main.go")
-        try Self.source.write(to: file, atomically: true, encoding: .utf8)
+        let session = try ClangdSession(files: ["main.cpp": Self.source])
+        try await session.start(capabilities: ["textDocument": [
+            "hover": ["contentFormat": ["markdown"]],
+            "completion": ["completionItem": ["snippetSupport": true]],
+        ]])
+        try session.open("main.cpp")
 
-        let client = LSPClient()
-        try client.start(executable: try #require(ToolLocator.find("gopls")),
-                         environment: ToolLocator.environment(), currentDirectory: dir)
-        _ = try await client.request("initialize", params: [
-            "processId": .int(Int(getpid())),
-            "rootUri": .string(dir.absoluteString),
-            "capabilities": ["textDocument": ["hover": ["contentFormat": ["markdown"]]]],
-        ])
-        try client.notify("initialized", params: [:])
-        try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": .string(file.absoluteString), "languageId": "go", "version": 1,
-                             "text": .string(Self.source)],
-        ])
-        func at(_ line: Int, _ character: Int) -> JSONValue {
-            ["textDocument": ["uri": .string(file.absoluteString)],
-             "position": TextPosition(line: line, character: character).json]
+        // `    name.app|` on line 7
+        let completion = try await session.poll("textDocument/completion", session.at("main.cpp", 7, 12)) {
+            // Until the preamble is built clangd answers with plain identifiers (kind text).
+            CompletionItem.parseList($0).contains { $0.filterText == "append" && $0.kind == .method }
         }
+        let items = CompletionItem.parseList(completion)
+        #expect(items.contains { $0.filterText == "append" && $0.kind == .method && $0.insertText.hasPrefix("append") })
+        #expect(items.allSatisfy { FuzzyMatch.matches("app", $0.filterText) })
 
-        // `\tfmt.Pri|` on line 8
-        let items = CompletionItem.parseList(try await client.request("textDocument/completion", params: at(8, 8)))
-        #expect(items.contains { $0.label == "Println" && $0.insertText == "Println" })
-        #expect(items.allSatisfy { FuzzyMatch.matches("Pri", $0.filterText) })
+        // Hover on `helper` in `return helper();` (line 8)
+        let hover = HoverContent.parse(try await session.poll("textDocument/hover", session.at("main.cpp", 8, 12)) {
+            HoverContent.parse($0) != nil
+        })
+        #expect(hover?.contains("helper") == true && hover?.contains("int") == true, "hover was: \(hover ?? "nil")")
 
-        // Hover on `Println` (line 7)
-        let hover = HoverContent.parse(try await client.request("textDocument/hover", params: at(7, 7)))
-        #expect(hover?.contains("Println(a ...any)") == true, "hover was: \(hover ?? "nil")")
+        // Definition of `helper` -> line 2
+        let locations = Location.parseAll(try await session.client.request("textDocument/definition",
+                                                                           params: session.at("main.cpp", 8, 12)))
+        #expect(locations.first?.uri.hasSuffix("/main.cpp") == true)
+        #expect(locations.first?.start.line == 2)
 
-        // Definition of `helper` (line 7, inside the call) -> line 4
-        let locations = Location.parseAll(try await client.request("textDocument/definition", params: at(7, 15)))
-        #expect(locations.first?.uri.hasSuffix("/main.go") == true)
-        #expect(locations.first?.start.line == 4)
+        // Definition of `std::string` -> a standard library header outside the project
+        let stdlib = Location.parseAll(try await session.client.request("textDocument/definition",
+                                                                        params: session.at("main.cpp", 5, 10)))
+        let header = try #require(stdlib.first?.uri)
+        #expect(!header.contains(session.dir.path) && header.contains("include"), "\(header)")
+        await session.shutdown()
+    }
 
-        // Definition of `Println` -> the standard library
-        let stdlib = Location.parseAll(try await client.request("textDocument/definition", params: at(7, 7)))
-        #expect(stdlib.first?.uri.hasSuffix("/fmt/print.go") == true)
-
-        await client.shutdown()
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
+    func switchesBetweenHeaderAndSource() async throws {
+        let session = try ClangdSession(files: [
+            "greeter.h": "#pragma once\nint greet();\n",
+            "greeter.cpp": "#include \"greeter.h\"\nint greet() { return 1; }\n",
+        ])
+        try await session.start()
+        try session.open("greeter.cpp")
+        let header = try await session.client.request("textDocument/switchSourceHeader", params: ["uri": session.uri("greeter.cpp")])
+        #expect(header.stringValue?.hasSuffix("/greeter.h") == true)
+        let source = try await session.client.request("textDocument/switchSourceHeader", params: ["uri": session.uri("greeter.h")])
+        #expect(source.stringValue?.hasSuffix("/greeter.cpp") == true)
+        await session.shutdown()
     }
 }
 
 @Suite struct ExpressionRangeTests {
     @Test func findsSelectorChains() {
         let text = "x := order.Items[0] + o.p.q" as NSString
-        func expr(_ at: Int) -> String? { GoIdentifier.expressionRange(in: text, at: at).map { text.substring(with: $0) } }
+        func expr(_ at: Int) -> String? { Identifier.expressionRange(in: text, at: at).map { text.substring(with: $0) } }
         #expect(expr(12) == "order.Items")   // on "Items"
         #expect(expr(6) == "order")          // on "order"
         #expect(expr(26) == "o.p.q")

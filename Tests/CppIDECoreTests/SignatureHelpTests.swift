@@ -27,45 +27,27 @@ import Testing
         #expect(SignatureHelp.parse(["signatures": []]) == nil)
     }
 
-    @Test(.enabled(if: ToolLocator.find("gopls") != nil), .timeLimit(.minutes(1)))
-    func goplsSignatureHelp() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-sig-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        try "module example.com/t\n\ngo 1.22\n".write(to: dir.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
-        let source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Printf(\"%d\", 1)\n}\n"
-        let file = dir.appendingPathComponent("main.go")
-        try source.write(to: file, atomically: true, encoding: .utf8)
-        let uri = JSONValue.string(file.absoluteString)
-
-        let client = LSPClient()
-        try client.start(executable: try #require(ToolLocator.find("gopls")),
-                         environment: ToolLocator.environment(), currentDirectory: dir)
-        _ = try await client.request("initialize", params: [
-            "processId": .int(Int(getpid())), "rootUri": .string(dir.absoluteString),
-            "capabilities": ["textDocument": ["signatureHelp": ["signatureInformation": [
-                "parameterInformation": ["labelOffsetSupport": true]]]]],
-        ])
-        try client.notify("initialized", params: [:])
-        try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": uri, "languageId": "go", "version": 1, "text": .string(source)],
-        ])
+    @Test(.enabled(if: hasClangd), .timeLimit(.minutes(1)))
+    func clangdSignatureHelp() async throws {
+        let source = "int scale(int value, double factor);\n\nint main() {\n    return scale(1, 2.0);\n}\n"
+        let session = try ClangdSession(files: ["main.cpp": source])
+        try await session.start(capabilities: ["textDocument": ["signatureHelp": ["signatureInformation": [
+            "parameterInformation": ["labelOffsetSupport": true]]]]])
+        try session.open("main.cpp")
         func help(_ character: Int) async throws -> SignatureHelp? {
-            let raw = try await client.request("textDocument/signatureHelp", params: [
-                "textDocument": ["uri": uri], "position": TextPosition(line: 5, character: character).json,
-            ])
-            let parsed = SignatureHelp.parse(raw)
-            if parsed == nil { Issue.record("raw signatureHelp at \(character): \(raw)") }
-            return parsed
+            let raw = try await session.poll("textDocument/signatureHelp", session.at("main.cpp", 3, character)) {
+                SignatureHelp.parse($0) != nil
+            }
+            return SignatureHelp.parse(raw)
         }
-        // `\tfmt.Printf("%d"|, |1)` (gopls gives no help inside string literals)
-        let first = try #require(try await help(16))
-        #expect(first.active?.label.contains("format string") == true)
+        // `    return scale(1|, 2.0|);`
+        let first = try #require(try await help(18))
+        #expect(first.active?.label.contains("int value") == true)
         let firstLabel = first.active!.label as NSString
-        #expect(firstLabel.substring(with: try #require(first.activeParameterRange)).hasPrefix("format"))
-        let second = try #require(try await help(18))
+        #expect(firstLabel.substring(with: try #require(first.activeParameterRange)) == "int value")
+        let second = try #require(try await help(23))
         let secondLabel = second.active!.label as NSString
-        #expect(secondLabel.substring(with: try #require(second.activeParameterRange)).hasPrefix("a "))
-        await client.shutdown()
+        #expect(secondLabel.substring(with: try #require(second.activeParameterRange)) == "double factor")
+        await session.shutdown()
     }
 }
