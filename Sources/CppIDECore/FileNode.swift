@@ -10,7 +10,15 @@ public struct FileNode: Identifiable, Hashable, Sendable {
     public var id: URL { url }
     public var name: String { url.lastPathComponent }
 
-    public static let ignoredNames: Set<String> = [".git", ".build", ".idea", ".vscode", "node_modules", "vendor"]
+    public static let ignoredNames: Set<String> = [".git", ".build", ".idea", ".vscode", "node_modules", "CMakeFiles"]
+
+    /// Top-level CMake binary dirs (`build`, `cmake-build-debug`, `out`): shown in the tree,
+    /// but skipped when searching and scanning for targets.
+    public static func isBuildOutput(_ url: URL, root: URL) -> Bool {
+        guard url.deletingLastPathComponent().canonicalFileURL.path == root.canonicalFileURL.path else { return false }
+        let name = url.lastPathComponent
+        return name == "build" || name == "out" || name.hasPrefix("cmake-build-")
+    }
 
     public init(url: URL, isDirectory: Bool, children: [FileNode]?) {
         self.url = url

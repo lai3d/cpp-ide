@@ -1,14 +1,15 @@
 import Foundation
 
-/// gopls settings CppIDE relies on (sent as initializationOptions and workspace/configuration).
-public enum GoplsSettings {
+/// clangd startup flags and initializationOptions.
+public enum ClangdSettings {
+    public static let arguments: [String] = [
+        "--background-index", "--clang-tidy", "--header-insertion=iwyu", "--completion-style=detailed",
+        "--function-arg-placeholders=1", "--pch-storage=memory", "--log=error",
+    ]
+
+    /// initializationOptions (clangd extensions we don't consume are switched off).
     public static let `default`: JSONValue = [
-        "hints": [
-            "assignVariableTypes": true, "compositeLiteralFields": true, "constantValues": true,
-            "functionTypeParameters": true, "parameterNames": true, "rangeVariableTypes": true,
-        ],
-        "semanticTokens": true,
-        "usePlaceholders": true,  // function call completions get parameter placeholders
+        "clangdFileStatus": false,
     ]
 }
 

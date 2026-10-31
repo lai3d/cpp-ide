@@ -1,7 +1,7 @@
 import CppIDECore
 import SwiftUI
 
-/// Results of the last `go test -json` run: test list on the left, selected output on the right.
+/// Results of the last ctest run: test list on the left, selected output on the right.
 struct TestsPanel: View {
     @Environment(Workspace.self) private var workspace
 
@@ -61,7 +61,7 @@ struct TestsPanel: View {
     }
 
     /// The selected test's output followed by its subtests' (where failures are usually logged).
-    private func combinedOutput(_ report: GoTestReport) -> String? {
+    private func combinedOutput(_ report: TestReport) -> String? {
         guard let selected = report.tests.first(where: { $0.id == workspace.selectedTestID }) else { return nil }
         guard let name = selected.name else { return selected.output }
         return report.tests
@@ -69,7 +69,7 @@ struct TestsPanel: View {
             .map(\.output).joined()
     }
 
-    private func summary(_ report: GoTestReport) -> some View {
+    private func summary(_ report: TestReport) -> some View {
         HStack(spacing: 10) {
             Text(workspace.testRunTitle).fontWeight(.semibold).lineLimit(1)
             Spacer()
@@ -93,7 +93,7 @@ struct TestsPanel: View {
 }
 
 private struct TestRow: View {
-    let test: GoTestResult
+    let test: TestResult
 
     var body: some View {
         HStack(spacing: 6) {
@@ -110,7 +110,7 @@ private struct TestRow: View {
 }
 
 struct TestStatusIcon: View {
-    let status: GoTestResult.Status
+    let status: TestResult.Status
 
     var body: some View {
         switch status {
@@ -122,7 +122,7 @@ struct TestStatusIcon: View {
     }
 }
 
-/// A test's output; `file.go:12` references are clickable.
+/// A test's output; `file.cpp:12` references are clickable.
 private struct TestOutput: View {
     @Environment(Workspace.self) private var workspace
     let output: String?
@@ -148,7 +148,7 @@ private struct TestOutput: View {
 
     @ViewBuilder
     private func lineView(_ line: String) -> some View {
-        if let ref = GoTestFinder.fileReferences(in: line).first {
+        if let ref = TestFinder.fileReferences(in: line).first {
             Button { workspace.revealOutputReference(file: ref.file, line: ref.line) } label: {
                 Text(line).underline().foregroundStyle(Color.accentColor)
             }

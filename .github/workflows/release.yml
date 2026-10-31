@@ -25,4 +25,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" build/CppIDE.zip \
             --title "CppIDE $GITHUB_REF_NAME" \
             --generate-notes \
-            --notes "Ad-hoc signed build: the first time, right-click CppIDE.app and choose Open (or run: xattr -dr com.apple.quarantine CppIDE.app). Requires macOS 14+, Go, gopls and dlv."
+            --notes "Ad-hoc signed build: the first time, right-click CppIDE.app and choose Open (or run: xattr -dr com.apple.quarantine CppIDE.app). Requires macOS 14+ and Xcode or the Command Line Tools (clang, clangd, lldb-dap); CMake for CMake projects."

@@ -29,14 +29,15 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { workspace.runGo(["build", "./..."]) } label: {
+                Button { workspace.build() } label: {
                     Label("Build", systemImage: "hammer")
                 }
-                .help("go build ./... (⌘B)")
+                .help(workspace.buildSystem == .cmake ? "cmake --build build (⌘B)"
+                      : workspace.buildSystem == .make ? "make (⌘B)" : "Compile the active file (⌘B)")
                 Button { workspace.runTests(.all) } label: {
                     Label("Test", systemImage: "checkmark.diamond")
                 }
-                .help("go test ./... (⌘U)")
+                .help("ctest (⌘U)")
                 RunConfigurationPicker()
                 Button { workspace.runSelectedConfiguration() } label: {
                     Label("Run", systemImage: "play.fill")
@@ -45,7 +46,7 @@ struct ContentView: View {
                 Button { workspace.startDebugging() } label: {
                     Label("Debug", systemImage: "ladybug")
                 }
-                .help("Debug with Delve (⌥⌘R)")
+                .help("Debug with lldb-dap (⌥⌘R)")
                 .disabled(workspace.isDebugging)
                 Button { workspace.stopRun() } label: {
                     Label("Stop", systemImage: "stop.fill")
@@ -72,7 +73,7 @@ struct WelcomeView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
             Text("CppIDE").font(.largeTitle.bold())
-            Text("Open a Go module folder to get started.")
+            Text("Open a C or C++ project folder (CMake, Makefile or plain sources) to get started.")
                 .foregroundStyle(.secondary)
             Button("Open Folder…") { workspace.presentOpenPanel() }
                 .keyboardShortcut("o")
@@ -193,7 +194,7 @@ struct FileTreeView: View {
 
     private func newFile(in folder: URL) {
         guard let name = Prompt.text(title: "New File", message: "In \(folder.lastPathComponent)",
-                                     initial: "untitled.go", confirm: "Create") else { return }
+                                     initial: "untitled.cpp", confirm: "Create") else { return }
         Prompt.attempt { try workspace.createFile(named: name, in: folder) }
     }
 
@@ -230,9 +231,10 @@ struct FileTreeView: View {
 
     private static func icon(for node: FileNode) -> String {
         if node.isDirectory { return "folder" }
-        switch node.url.pathExtension {
-        case "go": return "doc.text"
-        case "mod", "sum": return "shippingbox"
+        if node.name == "CMakeLists.txt" || node.name == "Makefile" || node.url.pathExtension == "cmake" { return "hammer" }
+        switch node.url.pathExtension.lowercased() {
+        case "h", "hh", "hpp", "hxx", "inl": return "h.square"
+        case "c", "cc", "cpp", "cxx", "m", "mm": return "c.square"
         case "md": return "doc.richtext"
         default: return "doc"
         }
@@ -311,8 +313,8 @@ struct DocumentEditor: View {
     var body: some View {
         CodeEditorView(
             text: document.text,
-            highlightGo: document.isGo,
-            isTestFile: document.name.hasSuffix("_test.go"),
+            highlightSyntax: document.isSource,
+            isTestFile: document.isSource && TestFinder.isTestFile(name: document.name, text: document.text),
             testStatuses: workspace.testStatuses,
             breakpoints: workspace.breakpointLines(for: document),
             conditionalBreakpoints: workspace.conditionalBreakpointLines(for: document),
@@ -544,7 +546,7 @@ private struct OutputLine: View {
     let text: String
 
     var body: some View {
-        if let reference = GoTestFinder.fileReferences(in: text).first {
+        if let reference = TestFinder.fileReferences(in: text).first {
             Button { workspace.revealOutputReference(file: reference.file, line: reference.line) } label: {
                 Text(text).underline().foregroundStyle(Color.accentColor)
             }
@@ -592,7 +594,7 @@ struct OutputView: View {
                     if workspace.output.isEmpty {
                         Text("No output yet. Use Build (⌘B), Test (⌘U) or Run (⌘R).").foregroundStyle(.secondary)
                     }
-                    // Line by line, so `file.go:12:3` references from go build/vet/run are clickable.
+                    // Line by line, so `file.cpp:12:3` references from compiler output are clickable.
                     ForEach(Array(workspace.output.split(separator: "\n", omittingEmptySubsequences: false).enumerated()),
                             id: \.offset) { _, line in
                         OutputLine(text: String(line))

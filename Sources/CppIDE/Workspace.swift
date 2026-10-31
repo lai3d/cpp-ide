@@ -111,7 +111,7 @@ final class Document: Identifiable {
     private(set) var caretPosition = TextPosition(line: 0, character: 0)
 
     var name: String { url.lastPathComponent }
-    var isGo: Bool { url.pathExtension == "go" }
+    var isSource: Bool { SourceKind.isSource(url) }
 
     init(url: URL, text: String, isReadOnly: Bool) {
         self.url = url
@@ -136,7 +136,7 @@ enum FileOperationError: LocalizedError {
     }
 }
 
-/// All state for one project folder: open documents, gopls, and go commands.
+/// All state for one project folder: open documents, clangd, builds and the debugger.
 @MainActor
 @Observable
 final class Workspace {
@@ -155,7 +155,7 @@ final class Workspace {
         current = workspace
     }
 
-    /// Releases a closing window's resources: gopls, Delve, the file watcher, running commands.
+    /// Releases a closing window's resources: clangd, lldb-dap, the file watcher, running commands.
     func shutdown() async {
         Self.registry.remove(self)
         if Self.current === self { Self.current = Self.allOpen.last }
@@ -174,8 +174,8 @@ final class Workspace {
         didSet { if activeDocument !== oldValue { saveSession() } }
     }
     private(set) var diagnostics: [String: [Diagnostic]] = [:]  // keyed by normalized path
-    private(set) var lspStatus = "gopls: not started"
-    /// Bumped each time gopls becomes ready, so editors can (re)request hints etc.
+    private(set) var lspStatus = "clangd: not started"
+    /// Bumped each time clangd becomes ready, so editors can (re)request hints etc.
     private(set) var languageServerEpoch = 0
     private(set) var output = ""
     private(set) var isRunning = false
@@ -219,11 +219,11 @@ final class Workspace {
     private(set) var outline: [SymbolNode] = []
 
     // Tests
-    private(set) var testReport = GoTestReport()
+    private(set) var testReport = TestReport()
     private(set) var testRunTitle = ""
     var selectedTestID: String?
     /// Latest status per test name, for gutter markers.
-    var testStatuses: [String: GoTestResult.Status] {
+    var testStatuses: [String: TestResult.Status] {
         Dictionary(testReport.tests.compactMap { t in t.name.map { ($0, t.status) } }, uniquingKeysWith: { $1 })
     }
 
@@ -267,7 +267,9 @@ final class Workspace {
     var selectedRunConfigurationID: UUID? {
         didSet { saveRunConfigurations() }
     }
-    private(set) var mainPackages: [String] = []
+    /// Runnable targets found in the project (CMake executables or files with `main`).
+    private(set) var runTargets: [String] = []
+    private(set) var buildSystem: BuildSystem = .plain
     var isEditingRunConfigurations = false
 
     var selectedRunConfiguration: RunConfiguration? {
@@ -281,8 +283,9 @@ final class Workspace {
     // Find references
     private(set) var referenceResults: [SearchFileResult] = []
     private(set) var referenceTitle = ""
-    /// Settings ▸ Editor (and Go ▸ Format on Save).
-    var formatOnSave: Bool { UserDefaults.standard.object(forKey: "formatOnSave") as? Bool ?? true }
+    /// Settings ▸ Editor (and Build ▸ Format on Save). Off by default: without a .clang-format,
+    /// clang-format's LLVM style would reformat existing code.
+    var formatOnSave: Bool { UserDefaults.standard.object(forKey: "formatOnSave") as? Bool ?? false }
 
     @ObservationIgnored private var lsp: LSPClient?
     @ObservationIgnored private var lspReady = false
@@ -291,7 +294,7 @@ final class Workspace {
     @ObservationIgnored private var watcher: DirectoryWatcher?
 
     var currentFile: URL? { activeDocument?.url }
-    var isGoFile: Bool { activeDocument?.isGo ?? false }
+    var isSourceFile: Bool { activeDocument?.isSource ?? false }
     var canGoBack: Bool { !backStack.isEmpty }
     var dirtyDocuments: [Document] { documents.filter(\.isDirty) }
 
@@ -320,7 +323,7 @@ final class Workspace {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
-        panel.message = "Choose a Go module or workspace folder"
+        panel.message = "Choose a C/C++ project folder (CMake, Make, or plain sources)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await openFolder(url) }
     }
@@ -354,7 +357,7 @@ final class Workspace {
         }
         for document in documents { sendDidClose(document) }
         await stopLanguageServer()
-        // Use the real path (e.g. /private/tmp, not /tmp) so it matches what gopls reports.
+        // Use the real path (e.g. /private/tmp, not /tmp) so it matches what clangd reports.
         let url = url.canonicalFileURL
         rootURL = url
         fileTree = FileNode.loadTree(at: url)
@@ -381,26 +384,29 @@ final class Workspace {
 
     @ObservationIgnored private var loadingRunConfigurations = false
 
-    /// Saved configurations for this folder, or one per main package found.
+    var project: CppProject? { rootURL.map { CppProject(root: $0) } }
+
+    /// Saved configurations for this folder, or one per runnable target found.
     func loadRunConfigurations() {
         guard let rootURL else { return }
-        mainPackages = GoPackages.mainPackages(under: rootURL)
+        refreshRunTargets()
         loadingRunConfigurations = true
         defer { loadingRunConfigurations = false }
         if let saved = SessionStore.runConfigurations(for: rootURL), !saved.configs.isEmpty {
             runConfigurations = saved.configs
             selectedRunConfigurationID = saved.selected ?? saved.configs.first?.id
         } else {
-            runConfigurations = mainPackages.map {
-                RunConfiguration(name: $0 == "." ? rootURL.lastPathComponent : ($0 as NSString).lastPathComponent, package: $0)
+            runConfigurations = runTargets.map {
+                RunConfiguration(name: (($0 as NSString).lastPathComponent as NSString).deletingPathExtension, target: $0)
             }
             selectedRunConfigurationID = runConfigurations.first?.id
         }
     }
 
-    func refreshMainPackages() {
-        guard let rootURL else { return }
-        mainPackages = GoPackages.mainPackages(under: rootURL)
+    func refreshRunTargets() {
+        guard let project else { return }
+        buildSystem = project.buildSystem
+        runTargets = project.runnableTargets()
     }
 
     private func saveRunConfigurations() {
@@ -408,17 +414,23 @@ final class Workspace {
         SessionStore.saveRunConfigurations(runConfigurations, selected: selectedRunConfigurationID, for: rootURL)
     }
 
-    /// ⌘R: `go run <package> <args>` with the configuration's environment.
+    /// ⌘R: build the selected configuration's target, then run it.
     func runSelectedConfiguration() {
-        guard let config = selectedRunConfiguration else { return runGo(["run", "."]) }
-        runGo(["run", config.packagePattern] + config.argumentList, environment: config.environmentVariables)
+        if let config = selectedRunConfiguration { return run(config) }
+        // No configuration: compile and run the active file if it has `main`.
+        guard let document = activeDocument, document.isSource else {
+            output = "Nothing to run: add a run configuration (an executable target or a file with main()).\n"
+            bottomTab = .output
+            return
+        }
+        run(RunConfiguration(name: document.name, target: displayPath(Self.key(for: document.url))))
     }
 
     // MARK: - Session
 
     @ObservationIgnored private var restoringSession = false
 
-    /// Reopens the tabs open last time in this folder (else main.go or the first Go file).
+    /// Reopens the tabs open last time in this folder (else main.cpp or the first source file).
     private func restoreSession(in folder: URL) {
         let saved = SessionStore.session(for: folder)
         let files = (saved?.openFiles ?? []).map { URL(fileURLWithPath: $0) }
@@ -457,10 +469,13 @@ final class Workspace {
         }
     }
 
-    /// Reacts to files changed on disk (by us, an external editor, git, go generate…).
+    /// Reacts to files changed on disk (by us, an external editor, git, a build…).
     func handleFileSystemChanges(_ paths: [String]) {
         // Commits, checkouts, staging… only touch .git: refresh Git state for those too.
         if paths.contains(where: { $0.contains("/.git/") || $0.hasSuffix("/.git") }) { refreshGit() }
+        // A (re)configure rewrites build/compile_commands.json: clangd must re-read it.
+        let databases = paths.filter(SourceKind.isBuildInput)
+        if !databases.isEmpty { notifyWatchedFiles(databases) }
         let relevant = paths.filter { !isIgnored(path: $0) }
         guard !relevant.isEmpty else { return }
         reloadTree()
@@ -565,9 +580,10 @@ final class Workspace {
         guard let rootURL else { return true }
         let root = Self.key(for: rootURL) + "/"
         guard path.hasPrefix(root) else { return true }
-        return path.dropFirst(root.count).split(separator: "/").contains {
-            $0.hasPrefix(".") || FileNode.ignoredNames.contains(String($0))
-        }
+        let parts = path.dropFirst(root.count).split(separator: "/")
+        if let first = parts.first, parts.count > 1,
+           FileNode.isBuildOutput(rootURL.appendingPathComponent(String(first)), root: rootURL) { return true }
+        return parts.contains { $0.hasPrefix(".") || FileNode.ignoredNames.contains(String($0)) }
     }
 
     private func syncWithDisk(_ document: Document) {
@@ -597,10 +613,8 @@ final class Workspace {
 
     private func notifyWatchedFiles(_ paths: [String]) {
         guard lspReady else { return }
-        let goFiles = paths.filter {
-            $0.hasSuffix(".go") || $0.hasSuffix("/go.mod") || $0.hasSuffix("/go.sum") || $0.hasSuffix("/go.work")
-        }
-        let changes: [JSONValue] = goFiles.map { path in
+        let sources = paths.filter { SourceKind.isSource(URL(fileURLWithPath: $0)) || SourceKind.isBuildInput($0) }
+        let changes: [JSONValue] = sources.map { path in
             let exists = FileManager.default.fileExists(atPath: path)
             return ["uri": .string(URL(fileURLWithPath: path).absoluteString), "type": .int(exists ? 2 : 3)]
         }
@@ -613,7 +627,7 @@ final class Workspace {
     @discardableResult
     func createFile(named name: String, in directory: URL) throws -> URL {
         let url = try newItemURL(named: name, in: directory)
-        let contents = url.pathExtension == "go" ? "package \(Self.packageName(for: directory))\n" : ""
+        let contents = Self.template(for: url)
         try contents.write(to: url, atomically: true, encoding: .utf8)
         reloadTree()
         openFile(url)
@@ -674,18 +688,16 @@ final class Workspace {
         }
     }
 
-    /// The package clause of a sibling .go file, else a name derived from the folder.
-    static func packageName(for directory: URL) -> String {
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.pathExtension == "go" && !file.lastPathComponent.hasSuffix("_test.go") {
-            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-            for line in text.split(separator: "\n") where line.hasPrefix("package ") {
-                return String(line.dropFirst("package ".count)).trimmingCharacters(in: .whitespaces)
-            }
+    /// Starter contents: `#pragma once` for headers, `#include "x.h"` when a sibling header exists.
+    static func template(for url: URL) -> String {
+        if SourceKind.isHeader(url) { return "#pragma once\n\n" }
+        guard SourceKind.sourceExtensions.contains(url.pathExtension.lowercased()) else { return "" }
+        let base = url.deletingPathExtension().lastPathComponent
+        for ext in ["h", "hpp", "hh", "hxx"] {
+            let header = url.deletingLastPathComponent().appendingPathComponent(base + "." + ext)
+            if FileManager.default.fileExists(atPath: header.path) { return "#include \"\(base).\(ext)\"\n\n" }
         }
-        let name = directory.lastPathComponent.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
-        guard let first = name.first, !first.isNumber else { return "main" }
-        return name
+        return ""
     }
 
     // MARK: - Documents
@@ -802,30 +814,30 @@ final class Workspace {
 
     // MARK: - Formatting
 
-    /// Organizes imports, then formats with gopls (gofmt).
+    /// Formats with clangd (clang-format; honors the project's .clang-format).
     func format(_ document: Document) async {
-        guard lspReady, document.isGo, !document.isReadOnly, let lsp else { return }
-        let uri = JSONValue.string(document.url.absoluteString)
-
-        var version = document.version
-        if let result = try? await lsp.request("textDocument/codeAction", params: [
-            "textDocument": ["uri": uri],
-            "range": ["start": TextPosition(line: 0, character: 0).json, "end": TextPosition(line: 0, character: 0).json],
-            "context": ["diagnostics": [], "only": ["source.organizeImports"]],
-        ]), document.version == version {
-            for action in CodeAction.parseAll(result) where action.kind == "source.organizeImports" {
-                guard let edit = action.edit else { continue }
-                replaceText(of: document, with: TextEdit.apply(edits(for: document, in: edit), to: document.text))
-            }
-        }
-
-        version = document.version
+        guard lspReady, document.isSource, !document.isReadOnly, let lsp else { return }
+        let version = document.version
+        let tabWidth = UserDefaults.standard.object(forKey: EditorSettings.tabWidthKey) as? Int ?? 4
         guard let result = try? await lsp.request("textDocument/formatting", params: [
-            "textDocument": ["uri": uri],
-            "options": ["tabSize": 4, "insertSpaces": false],
+            "textDocument": ["uri": .string(document.url.absoluteString)],
+            "options": ["tabSize": .int(tabWidth), "insertSpaces": true],
         ]), document.version == version else { return }  // edited meanwhile: skip
         let edits = result.arrayValue?.compactMap(TextEdit.parse) ?? []
+        guard !edits.isEmpty else { return }
         replaceText(of: document, with: TextEdit.apply(edits, to: document.text))
+    }
+
+    /// ⌃⌘↑: jump between a header and its source file (clangd's switchSourceHeader).
+    func switchSourceHeader() async {
+        guard lspReady, let document = activeDocument, document.isSource, let lsp else { return }
+        if let result = try? await lsp.request("textDocument/switchSourceHeader", params: [
+            "uri": .string(document.url.absoluteString),
+        ]), let uri = result.stringValue, let url = URL(string: uri) {
+            openFile(url)
+        } else {
+            flashStatus("No matching header/source for \(document.name)")
+        }
     }
 
     func formatActiveDocument() async {
@@ -860,7 +872,7 @@ final class Workspace {
             try document.text.write(to: document.url, atomically: true, encoding: .utf8)
             document.isDirty = false
             refreshGit()
-            if lspReady, document.isGo {
+            if lspReady, document.isSource {
                 try? lsp?.notify("textDocument/didSave", params: [
                     "textDocument": ["uri": .string(document.url.absoluteString)],
                 ])
@@ -880,10 +892,10 @@ final class Workspace {
     func completions(in document: Document, at offset: Int) async -> [CompletionItem] {
         // Built-in snippets for the word being typed (not after "." — that's a member).
         let ns = document.text as NSString
-        let start = GoIdentifier.prefixStart(in: ns, before: offset)
+        let start = Identifier.prefixStart(in: ns, before: offset)
         let prefix = ns.substring(with: NSRange(location: start, length: offset - start))
         let afterDot = start > 0 && ns.character(at: start - 1) == 0x2E
-        let snippets = document.isGo && !afterDot ? GoSnippets.completions(matching: prefix) : []
+        let snippets = document.isSource && !afterDot ? CppSnippets.completions(matching: prefix) : []
         guard case let (lsp, params)? = positionRequest(document, at: offset),
               let result = try? await lsp.request("textDocument/completion", params: params)
         else { return snippets }
@@ -899,7 +911,7 @@ final class Workspace {
 
     /// Semantic tokens for the whole document (decoded with the server's legend).
     func semanticTokens(in document: Document) async -> [SemanticToken] {
-        guard lspReady, document.isGo, let lsp, let legend = semanticLegend,
+        guard lspReady, document.isSource, let lsp, let legend = semanticLegend,
               let result = try? await lsp.request("textDocument/semanticTokens/full", params: [
                   "textDocument": ["uri": .string(document.url.absoluteString)],
               ])
@@ -908,7 +920,7 @@ final class Workspace {
     }
 
     func foldingRanges(in document: Document) async -> [FoldRegion] {
-        guard lspReady, document.isGo, let lsp,
+        guard lspReady, document.isSource, let lsp,
               let result = try? await lsp.request("textDocument/foldingRange", params: [
                   "textDocument": ["uri": .string(document.url.absoluteString)],
               ])
@@ -918,7 +930,7 @@ final class Workspace {
 
     /// Inlay hints for the whole document.
     func inlayHints(in document: Document) async -> [InlayHint] {
-        guard lspReady, document.isGo, let lsp else { return [] }
+        guard lspReady, document.isSource, let lsp else { return [] }
         let lines = LineIndex(document.text).lineCount
         guard let result = try? await lsp.request("textDocument/inlayHint", params: [
             "textDocument": ["uri": .string(document.url.absoluteString)],
@@ -955,7 +967,7 @@ final class Workspace {
 
     private func jumpToLocations(method: String, what: String, from document: Document, at offset: Int) async {
         guard case let (lsp, params)? = positionRequest(document, at: offset) else { return }
-        let symbol = GoIdentifier.wordRange(in: document.text as NSString, at: offset)
+        let symbol = Identifier.wordRange(in: document.text as NSString, at: offset)
             .map { (document.text as NSString).substring(with: $0) } ?? "symbol"
         let locations = (try? await lsp.request(method, params: params)).map(Location.parseAll) ?? []
         guard !locations.isEmpty else {
@@ -985,7 +997,7 @@ final class Workspace {
         guard case let (lsp, .object(params))? = positionRequest(document, at: offset) else { return }
         var request = params
         request["context"] = ["includeDeclaration": true]
-        let symbol = GoIdentifier.wordRange(in: document.text as NSString, at: offset)
+        let symbol = Identifier.wordRange(in: document.text as NSString, at: offset)
             .map { (document.text as NSString).substring(with: $0) } ?? "symbol"
         guard let result = try? await lsp.request("textDocument/references", params: .object(request)) else {
             flashStatus("Find References failed")
@@ -1020,7 +1032,7 @@ final class Workspace {
     @discardableResult
     func renameSymbol(in document: Document, at offset: Int, to newName: String) async -> String? {
         guard case let (lsp, .object(params))? = positionRequest(document, at: offset) else {
-            return "gopls is not ready"
+            return "clangd is not ready"
         }
         var request = params
         request["newName"] = .string(newName)
@@ -1031,7 +1043,7 @@ final class Workspace {
         } catch {
             return error.localizedDescription
         }
-        // Edits are relative to what gopls saw; bail out if a buffer changed meanwhile.
+        // Edits are relative to what clangd saw; bail out if a buffer changed meanwhile.
         guard documents.allSatisfy({ versions[$0.id] == nil || versions[$0.id] == $0.version }) else {
             return "The file changed while renaming; try again."
         }
@@ -1072,7 +1084,7 @@ final class Workspace {
         isQuickOpenVisible = false
     }
 
-    /// Files now (fuzzy, file name weighted), then gopls workspace symbols merged in.
+    /// Files now (fuzzy, file name weighted), then clangd workspace symbols merged in.
     func updateQuickOpen() {
         quickOpenTask?.cancel()
         guard let rootURL else { return }
@@ -1130,13 +1142,13 @@ final class Workspace {
 
     /// Re-reads the active document's symbols (debounced by the caller).
     func refreshOutline() async {
-        guard let document = activeDocument, document.isGo, lspReady, let lsp,
+        guard let document = activeDocument, document.isSource, lspReady, let lsp,
               let result = try? await lsp.request("textDocument/documentSymbol", params: [
                   "textDocument": ["uri": .string(document.url.absoluteString)],
               ]),
               document === activeDocument
         else {
-            if activeDocument?.isGo != true { outline = [] }
+            if activeDocument?.isSource != true { outline = [] }
             return
         }
         outline = SymbolNode.parseAll(result)
@@ -1155,7 +1167,7 @@ final class Workspace {
 
     /// Quick fixes, refactorings and source actions at the caret (or selection).
     func codeActions(in document: Document, at offset: Int, length: Int = 0) async -> [CodeAction] {
-        guard lspReady, document.isGo, let lsp else { return [] }
+        guard lspReady, document.isSource, let lsp else { return [] }
         let index = LineIndex(document.text)
         let caret = index.position(of: offset)
         let related = diagnostics(for: document).filter { $0.contains(caret) || $0.start.line == caret.line }
@@ -1171,7 +1183,7 @@ final class Workspace {
     }
 
     /// Runs a code action: resolves it if needed, applies its edit, then runs its command
-    /// (gopls may answer with workspace/applyEdit or window/showDocument).
+    /// (clangd may answer with workspace/applyEdit or window/showDocument).
     func perform(_ action: CodeAction) async {
         guard let lsp else { return }
         var action = action
@@ -1192,13 +1204,12 @@ final class Workspace {
         }
     }
 
-    /// Requests gopls sends to us.
+    /// Requests clangd sends to us.
     private func handleServerRequest(method: String, params: JSONValue) -> JSONValue? {
         switch method {
         case "workspace/configuration":
-            // Same settings as initializationOptions, so gopls keeps hints enabled.
             let items = params["items"]?.arrayValue ?? []
-            return .array(items.map { $0["section"]?.stringValue == "gopls" ? GoplsSettings.default : .null })
+            return .array(items.map { _ in .null })
         case "workspace/applyEdit":
             apply(WorkspaceEdit.parse(params["edit"] ?? .null))
             return ["applied": true]
@@ -1247,7 +1258,7 @@ final class Workspace {
         notifyWatchedFiles(written)  // don't wait for FSEvents
         if !created.isEmpty {
             reloadTree()
-            created.forEach { openFile($0) }  // e.g. a generated _test.go
+            created.forEach { openFile($0) }  // e.g. a header created by a refactoring
         }
         return changed
     }
@@ -1440,7 +1451,7 @@ final class Workspace {
     }
 
     private func positionRequest(_ document: Document, at offset: Int) -> (LSPClient, JSONValue)? {
-        guard lspReady, document.isGo, let lsp else { return nil }
+        guard lspReady, document.isSource, let lsp else { return nil }
         let position = LineIndex(document.text).position(of: offset)
         return (lsp, ["textDocument": ["uri": .string(document.url.absoluteString)], "position": position.json])
     }
@@ -1454,7 +1465,7 @@ final class Workspace {
         }
     }
 
-    // MARK: - gopls
+    // MARK: - clangd
 
     func restartLanguageServer() async {
         guard let rootURL else { return }
@@ -1463,8 +1474,8 @@ final class Workspace {
     }
 
     private func startLanguageServer(root: URL) async {
-        guard let gopls = ToolLocator.find("gopls") else {
-            lspStatus = "gopls not found — go install golang.org/x/tools/gopls@latest"
+        guard let clangd = ToolLocator.find("clangd") else {
+            lspStatus = "clangd not found — xcode-select --install, or brew install llvm"
             return
         }
         let client = LSPClient()
@@ -1479,25 +1490,26 @@ final class Workspace {
                 guard self.lsp === client else { return }
                 self.lsp = nil
                 self.lspReady = false
-                self.lspStatus = "gopls exited (status \(status))"
+                self.lspStatus = "clangd exited (status \(status))"
             }
         }
 
         do {
-            try client.start(executable: gopls, environment: ToolLocator.environment(), currentDirectory: root)
+            try client.start(executable: clangd, arguments: ClangdSettings.arguments,
+                             environment: ToolLocator.environment(), currentDirectory: root)
             lsp = client
-            lspStatus = "gopls: starting…"
+            lspStatus = "clangd: starting…"
             let initialized = try await client.request("initialize", params: Self.initializeParams(root: root))
             guard lsp === client else { return }  // folder changed while initializing
             semanticLegend = SemanticTokenLegend(initializeResult: initialized)
             try client.notify("initialized", params: [:])
             lspReady = true
-            lspStatus = "gopls: ready"
+            lspStatus = CppProject(root: root).hasCompilationDatabase ? "clangd: ready" : "clangd: ready (no compile_commands.json — build once)"
             languageServerEpoch += 1
             documents.forEach(sendDidOpen)
         } catch {
             if lsp === client { lsp = nil }
-            lspStatus = "gopls failed: \(error.localizedDescription)"
+            lspStatus = "clangd failed: \(error.localizedDescription)"
         }
     }
 
@@ -1508,7 +1520,7 @@ final class Workspace {
         client.onNotification = nil
         client.onExit = nil
         client.onRequest = nil
-        lspStatus = "gopls: stopped"
+        lspStatus = "clangd: stopped"
         await client.shutdown()
     }
 
@@ -1524,18 +1536,18 @@ final class Workspace {
                 diagnostics[key] = published.diagnostics
             }
         case "window/showMessage":
-            if let message = params["message"]?.stringValue { lspStatus = "gopls: \(message)" }
+            if let message = params["message"]?.stringValue { lspStatus = "clangd: \(message)" }
         default:
             break
         }
     }
 
     private func sendDidOpen(_ document: Document) {
-        guard lspReady, document.isGo else { return }
+        guard lspReady, document.isSource else { return }
         try? lsp?.notify("textDocument/didOpen", params: [
             "textDocument": [
                 "uri": .string(document.url.absoluteString),
-                "languageId": "go",
+                "languageId": .string(SourceKind.languageID(for: document.url)),
                 "version": .int(document.version),
                 "text": .string(document.text),
             ],
@@ -1543,7 +1555,7 @@ final class Workspace {
     }
 
     private func sendDidChange(_ document: Document) {
-        guard lspReady, document.isGo else { return }
+        guard lspReady, document.isSource else { return }
         try? lsp?.notify("textDocument/didChange", params: [
             "textDocument": ["uri": .string(document.url.absoluteString), "version": .int(document.version)],
             "contentChanges": [["text": .string(document.text)]],
@@ -1551,7 +1563,7 @@ final class Workspace {
     }
 
     private func sendDidClose(_ document: Document) {
-        guard lspReady, document.isGo else { return }
+        guard lspReady, document.isSource else { return }
         try? lsp?.notify("textDocument/didClose", params: [
             "textDocument": ["uri": .string(document.url.absoluteString)],
         ])
@@ -1609,7 +1621,7 @@ final class Workspace {
             "processId": .int(Int(ProcessInfo.processInfo.processIdentifier)),
             "clientInfo": ["name": "CppIDE", "version": "0.1.0"],
             "rootUri": .string(root.absoluteString),
-            "initializationOptions": GoplsSettings.default,
+            "initializationOptions": ClangdSettings.default,
             "workspaceFolders": [["uri": .string(root.absoluteString), "name": .string(root.lastPathComponent)]],
             "capabilities": [
                 "textDocument": textDocument,
@@ -1622,156 +1634,90 @@ final class Workspace {
 
     // MARK: - Tests
 
-    /// Runs `go test -json` for a scope and streams results into `testReport`.
-    /// Coverage from the last "Test with Coverage" run.
+    /// Coverage isn't measured for C/C++ yet (llvm-cov is on the roadmap); kept for the shared UI.
     private(set) var coverage: CoverageReport?
     var showCoverage = true
 
-    /// Zero-based line → covered, for the editor tint (empty when hidden or not measured).
-    func coverageLines(for document: Document) -> [Int: Bool] {
-        guard showCoverage, let coverage else { return [:] }
-        return coverage.files[Self.key(for: document.url)]?.lines ?? [:]
-    }
-
-    func runTestsWithCoverage() {
-        runTests(.all, coverage: true)
-    }
-
-    func runTests(_ scope: TestScope, coverage measure: Bool = false) {
-        guard let rootURL, !isRunning else { return }
-        guard let go = ToolLocator.find("go") else {
-            output = "go not found. Install Go from https://go.dev/dl/\n"
-            bottomTab = .output
-            return
-        }
-        saveAll()
-        var arguments = ["test", "-json"]
-        let profile = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-cover-\(UUID().uuidString).out")
-        if measure { arguments.append("-coverprofile=" + profile.path) }
-        switch scope {
-        case .all:
-            arguments.append("./...")
-            testRunTitle = "All tests"
-        case .package(let dir):
-            arguments.append(packagePattern(for: dir))
-            testRunTitle = "Package \(packagePattern(for: dir))"
-        case .test(let name, let dir):
-            arguments += ["-run", "^\(NSRegularExpression.escapedPattern(for: name))$", packagePattern(for: dir)]
-            testRunTitle = name
-        }
-        testReport = GoTestReport()
-        selectedTestID = nil
-        output = "$ go \(arguments.joined(separator: " "))\n"
-        bottomTab = .tests
-        isRunning = true
-
-        let process = Process()
-        process.executableURL = go
-        process.arguments = arguments
-        process.currentDirectoryURL = rootURL
-        process.environment = ToolLocator.environment()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        let buffer = LineBuffer()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            let lines = data.isEmpty ? buffer.flush() : buffer.append(data)
-            if data.isEmpty { handle.readabilityHandler = nil }
-            guard !lines.isEmpty else { return }
-            Task { @MainActor in lines.forEach { self.consumeTestLine($0) } }
-        }
-        process.terminationHandler = { proc in
-            let status = proc.terminationStatus
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(80))  // let the last lines land
-                self.isRunning = false
-                self.runProcess = nil
-                if measure { self.loadCoverage(profile) }
-                let r = self.testReport
-                self.appendOutput("\n[\(r.passed) passed, \(r.failed) failed, \(r.skipped) skipped — exit \(status)]\n")
-                if r.tests.isEmpty, !r.buildOutput.isEmpty { self.bottomTab = .output }  // build failed
-                self.selectedTestID = self.selectedTestID ?? r.tests.first { $0.status == .failed }?.id
-            }
-        }
-        do {
-            try process.run()
-            runProcess = process
-        } catch {
-            isRunning = false
-            appendOutput("Failed to start go: \(error.localizedDescription)\n")
-        }
-    }
-
-    private func loadCoverage(_ profile: URL) {
-        defer { try? FileManager.default.removeItem(at: profile) }
-        guard let rootURL, let text = try? String(contentsOf: profile, encoding: .utf8),
-              let goMod = try? String(contentsOf: rootURL.appendingPathComponent("go.mod"), encoding: .utf8),
-              let module = CoverageReport.modulePath(goMod: goMod)
-        else { return }
-        coverage = CoverageReport.parse(text, modulePath: module, root: Self.key(for: rootURL))
-        showCoverage = true
-    }
+    func coverageLines(for document: Document) -> [Int: Bool] { [:] }
 
     func clearCoverage() {
         coverage = nil
     }
 
-    private func consumeTestLine(_ line: String) {
-        testReport.consume(line: line)
-        if !line.hasPrefix("{") { appendOutput(line + "\n") }
-        else if let data = line.data(using: .utf8),
-                let event = try? JSONDecoder().decode(GoTestEvent.self, from: data),
-                let text = event.output, event.action == "output" || event.action == "build-output" {
-            appendOutput(text)
+    /// Builds, then runs `ctest` for a scope and streams results into `testReport`.
+    func runTests(_ scope: TestScope) {
+        guard let project, !isRunning else { return }
+        guard project.buildSystem == .cmake else {
+            output = "Tests run through CTest: add enable_testing() and add_test() (or gtest_discover_tests) to CMakeLists.txt.\n"
+            bottomTab = .output
+            return
         }
+        guard let ctest = ToolLocator.find("ctest") else {
+            output = "ctest not found. Install CMake: brew install cmake\n"
+            bottomTab = .output
+            return
+        }
+        var arguments = ["--test-dir", "build", "--output-on-failure", "--progress", "--no-tests=error"]
+        switch scope {
+        case .all, .package:
+            testRunTitle = "All tests"
+        case .test(let name, _):
+            arguments += ["-R", TestFinder.ctestFilter(name)]
+            testRunTitle = name
+        }
+        arguments.removeAll { $0 == "--progress" }  // keeps one line per test in the stream
+        testReport = TestReport()
+        selectedTestID = nil
+        let test = Command(executable: ctest, arguments: arguments, directory: project.root)
+        runPipeline(buildSteps(), then: .tests(test))
     }
 
-    /// Runs the test function around the caret, else the active file's package.
+    private func consumeTestLine(_ line: String) {
+        testReport.consume(line: line)
+        appendOutput(line + "\n")
+    }
+
+    /// Runs the test around the caret (GoogleTest / Catch2), else every test.
     func runTestAtCaret() {
-        guard let document = activeDocument else { return runTests(.all) }
-        let dir = document.url.deletingLastPathComponent()
-        if document.name.hasSuffix("_test.go"),
-           let name = GoTestFinder.enclosingTest(in: document.text, at: document.caretOffset) {
-            runTests(.test(name, in: dir))
-        } else {
-            runTests(.package(dir))
-        }
+        guard let document = activeDocument,
+              let name = TestFinder.enclosingTest(in: document.text, at: document.caretOffset)
+        else { return runTests(.all) }
+        runTests(.test(name, in: document.url.deletingLastPathComponent()))
     }
 
     func runActivePackageTests() {
-        guard let document = activeDocument else { return runTests(.all) }
-        runTests(.package(document.url.deletingLastPathComponent()))
+        runTests(.all)
     }
 
-    private func packagePattern(for dir: URL) -> String {
-        let relative = displayPath(Self.key(for: dir))
-        return relative == Self.key(for: dir) || relative.isEmpty ? "." : "./" + relative
-    }
-
-    /// Opens a test function's declaration (searches the project's _test.go files).
+    /// Opens a test's declaration (searches the project's sources).
     func revealTest(named name: String) {
         guard let rootURL else { return }
-        let base = String(name.split(separator: "/").first ?? Substring(name))
-        for path in ProjectSearch.files(under: rootURL) where path.hasSuffix("_test.go") {
+        for path in ProjectSearch.files(under: rootURL) where SourceKind.isSource(URL(fileURLWithPath: path)) {
             let key = Self.key(for: URL(fileURLWithPath: path))
             let text = documents.first { Self.key(for: $0.url) == key }?.text
                 ?? (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            if let found = GoTestFinder.testFunctions(in: text).first(where: { $0.name == base }) {
-                navigate(to: URL(fileURLWithPath: path), position: TextPosition(line: found.line, character: 5))
+            guard text.contains("TEST") || text.contains("SCENARIO") else { continue }
+            if let found = TestFinder.testFunctions(in: text).first(where: { $0.name == name }) {
+                navigate(to: URL(fileURLWithPath: path), position: TextPosition(line: found.line, character: 0))
                 return
             }
         }
     }
 
-    /// Opens `file.go:line` from test output (resolved by file name within the project).
+    /// Opens `file.cpp:line` from build/test output (absolute, or resolved by name within the project).
     func revealOutputReference(file: String, line: Int) {
         guard let rootURL else { return }
+        let position = TextPosition(line: max(line - 1, 0), character: 0)
+        if file.hasPrefix("/"), FileManager.default.fileExists(atPath: file) {
+            return navigate(to: URL(fileURLWithPath: file), position: position)
+        }
+        let direct = rootURL.appendingPathComponent(file)
+        if FileManager.default.fileExists(atPath: direct.path) { return navigate(to: direct, position: position) }
         let suffix = "/" + (file as NSString).lastPathComponent
         let candidates = ProjectSearch.files(under: rootURL).filter { $0.hasSuffix(suffix) }
         let match = candidates.first { $0.hasSuffix("/" + file) } ?? candidates.first
         guard let path = match else { return }
-        navigate(to: URL(fileURLWithPath: path), position: TextPosition(line: max(line - 1, 0), character: 0))
+        navigate(to: URL(fileURLWithPath: path), position: position)
     }
 
     // MARK: - Debugging
@@ -1810,7 +1756,7 @@ final class Workspace {
         let key = Self.key(for: document.url)
         let current = breakpointConditions[key]?[line + 1] ?? ""
         guard let condition = Prompt.text(title: "Breakpoint Condition",
-                                          message: "Stop at line \(line + 1) only when this Go expression is true.",
+                                          message: "Stop at line \(line + 1) only when this C/C++ expression is true.",
                                           initial: current, confirm: "Done", allowEmpty: true) else { return }
         breakpoints[key, default: []].insert(line + 1)
         breakpointConditions[key, default: [:]][line + 1] = condition.isEmpty ? nil : condition
@@ -1840,7 +1786,7 @@ final class Workspace {
     }
 
     func toggleBreakpointAtCaret() {
-        guard let document = activeDocument, document.isGo else { return }
+        guard let document = activeDocument, document.isSource else { return }
         toggleBreakpoint(in: document, line: LineIndex(document.text).position(of: document.caretOffset).line)
     }
 
@@ -1853,64 +1799,26 @@ final class Workspace {
         }
     }
 
-    /// Debugs the test at the caret (in a _test.go file), else the active file's package (or the root).
+    /// ⌥⌘R: builds the selected run configuration (or the active file), then debugs it under lldb-dap.
     func startDebugging() {
-        guard let rootURL else { return }
-        if let document = activeDocument, document.name.hasSuffix("_test.go"),
-           let name = GoTestFinder.enclosingTest(in: document.text, at: document.caretOffset) {
-            debug(test: name, in: document.url.deletingLastPathComponent())
-        } else if let config = selectedRunConfiguration {
-            debug(configuration: config)
-        } else if let document = activeDocument, document.isGo, !document.name.hasSuffix("_test.go") {
-            debug(package: document.url.deletingLastPathComponent())
-        } else {
-            debug(package: rootURL)
-        }
-    }
-
-    func debug(package dir: URL) {
-        launchDebugger(title: packagePattern(for: dir), directory: dir, launch: [
-            "request": "launch", "mode": "debug", "program": .string(Self.key(for: dir)),
-            "cwd": .string(Self.key(for: dir)), "outputMode": "remote",
-        ])
+        if let config = selectedRunConfiguration { return debug(configuration: config) }
+        guard let document = activeDocument, document.isSource else { return }
+        debug(configuration: RunConfiguration(name: document.name, target: displayPath(Self.key(for: document.url))))
     }
 
     func debug(configuration config: RunConfiguration) {
-        guard let rootURL else { return }
-        let dir = Self.key(for: rootURL.appendingPathComponent(config.package == "." ? "" : config.package))
-        launchDebugger(title: config.name, directory: URL(fileURLWithPath: dir), launch: [
-            "request": "launch", "mode": "debug", "program": .string(dir),
-            "cwd": .string(Self.key(for: rootURL)), "outputMode": "remote",
-            "args": .array(config.argumentList.map(JSONValue.string)),
-            "env": .object(config.environmentVariables.mapValues(JSONValue.string)),
-        ])
-    }
-
-    func debug(test name: String, in dir: URL) {
-        launchDebugger(title: name, directory: dir, launch: [
-            "request": "launch", "mode": "test", "program": .string(Self.key(for: dir)),
-            "cwd": .string(Self.key(for: dir)), "outputMode": "remote",
-            "args": ["-test.run", .string("^\(NSRegularExpression.escapedPattern(for: name))$"), "-test.v"],
-        ])
-    }
-
-    private func launchDebugger(title: String, directory: URL, launch: JSONValue) {
-        guard rootURL != nil else { return }
-        // Build the debug binary outside the project (Delve defaults to the package folder).
-        var launch = launch
-        if case .object(var config) = launch {
-            config["output"] = .string(FileManager.default.temporaryDirectory
-                .appendingPathComponent("cppide-debug-\(UUID().uuidString)").path)
-            launch = .object(config)
-        }
+        guard let project else { return }
         if let session = debugSession, session.isActive { return }
-        guard let dlv = ToolLocator.find("dlv") else {
-            output = "dlv not found. Install it with:\n  go install github.com/go-delve/delve/cmd/dlv@latest\n"
+        guard let adapter = ToolLocator.find("lldb-dap") else {
+            output = "lldb-dap not found. Install Xcode (or brew install llvm) and run xcode-select -s /Applications/Xcode.app\n"
             bottomTab = .output
             return
         }
-        saveAll()
-        let session = DebugSession(title: title)
+        runPipeline(buildSteps(target: config.target), then: .debug(config, adapter: adapter, project: project))
+    }
+
+    private func launchDebugger(_ config: RunConfiguration, program: URL, adapter: URL, project: CppProject) {
+        let session = DebugSession(title: config.name)
         session.onLocation = { [weak self] location in
             guard let self else { return }
             executionLocation = location
@@ -1920,10 +1828,18 @@ final class Workspace {
         }
         session.onOutput = { [weak self] text in self?.appendOutput(text) }
         debugSession = session
-        output = "Debugging \(title)…\n"
+        appendOutput("\nDebugging \(program.path)…\n")
         bottomTab = .debug
+        let env = ProcessInfo.processInfo.environment.merging(config.environmentVariables) { $1 }
+        let launch: JSONValue = [
+            "program": .string(program.path),
+            "args": .array(config.argumentList.map(JSONValue.string)),
+            "cwd": .string(Self.key(for: project.root)),
+            "env": .array(env.sorted { $0.key < $1.key }.map { .string("\($0.key)=\($0.value)") }),
+            "stopOnEntry": false,
+        ]
         let specs = Dictionary(uniqueKeysWithValues: breakpoints.keys.map { ($0, breakpointSpec($0)) })
-        Task { await session.start(dlv: dlv, directory: directory, launch: launch, breakpoints: specs) }
+        Task { await session.start(adapter: adapter, directory: project.root, launch: launch, breakpoints: specs) }
     }
 
     func stopDebugging() {
@@ -1933,57 +1849,206 @@ final class Workspace {
 
     var isDebugging: Bool { debugSession?.isActive ?? false }
 
-    // MARK: - go run / build / test
+    // MARK: - Build / run
 
-    func runGo(_ arguments: [String], environment extra: [String: String] = [:]) {
-        guard let rootURL, !isRunning else { return }
-        guard let go = ToolLocator.find("go") else {
-            output = "go not found. Install Go from https://go.dev/dl/\n"
-            bottomTab = .output
-            return
+    /// What happens after the build steps succeed.
+    enum PipelineFinish {
+        case none
+        case run(RunConfiguration)
+        case tests(Command)
+        case debug(RunConfiguration, adapter: URL, project: CppProject)
+    }
+
+    /// One step of a pipeline: resolved lazily (an executable's path is known only after building).
+    struct PipelineStep {
+        let title: String
+        let resolve: @MainActor () -> Result<Command, PipelineError>
+    }
+
+    struct PipelineError: Error {
+        let message: String
+    }
+
+    /// ⌘B: configure (CMake, first time) and build everything.
+    func build() {
+        runPipeline(buildSteps(), then: .none)
+    }
+
+    /// Wipes CMake's cache and configures again (after changing toolchains or options).
+    func reconfigure() {
+        guard let project, project.buildSystem == .cmake, !isRunning else { return }
+        try? FileManager.default.removeItem(at: project.buildDirectory.appendingPathComponent("CMakeCache.txt"))
+        try? FileManager.default.removeItem(at: project.buildDirectory.appendingPathComponent("CMakeFiles"))
+        build()
+    }
+
+    /// Removes build products (`cmake --build build --target clean` / `make clean`).
+    func clean() {
+        guard let project else { return }
+        switch project.buildSystem {
+        case .cmake:
+            guard project.isConfigured, let cmake = ToolLocator.find("cmake") else { return }
+            runPipeline([.fixed("Clean", Command(executable: cmake, arguments: ["--build", "build", "--target", "clean"],
+                                                 directory: project.root))], then: .none)
+        case .make:
+            guard let make = ToolLocator.find("make") else { return }
+            runPipeline([.fixed("Clean", Command(executable: make, arguments: ["clean"], directory: project.root))], then: .none)
+        case .plain:
+            try? FileManager.default.removeItem(at: project.buildDirectory)
+            flashStatus("Removed build/")
         }
-        saveAll()
-        let envNote = extra.isEmpty ? "" : extra.keys.sorted().map { "\($0)=… " }.joined()
-        // Echo the command shell-style (quote words with spaces) so it reads as it ran.
-        let shown = arguments.map { $0.contains(" ") || $0.isEmpty ? "\"\($0)\"" : $0 }.joined(separator: " ")
-        output = "$ \(envNote)go \(shown)\n"
-        bottomTab = .output
-        isRunning = true
+    }
 
+    /// Steps that bring `target` (or everything) up to date.
+    func buildSteps(target: String? = nil) -> [PipelineStep] {
+        guard let project else { return [] }
+        switch project.buildSystem {
+        case .cmake:
+            guard let cmake = ToolLocator.find("cmake") else {
+                return [.failure("Build", "cmake not found. Install it: brew install cmake")]
+            }
+            var steps: [PipelineStep] = []
+            if !project.isConfigured {
+                CMakeFileAPI.writeQuery(buildDirectory: project.buildDirectory)
+                steps.append(.fixed("Configure", project.configureCommand(cmake: cmake, ninja: ToolLocator.find("ninja"))))
+            } else {
+                CMakeFileAPI.writeQuery(buildDirectory: project.buildDirectory)
+            }
+            steps.append(.fixed("Build", project.buildCommand(tool: cmake, target: target)))
+            return steps
+        case .make where target.map(project.isSingleFileTarget) != true:
+            guard let make = ToolLocator.find("make") else { return [.failure("Build", "make not found: xcode-select --install")] }
+            return [.fixed("Build", project.buildCommand(tool: make))]
+        case .make, .plain:
+            guard let source = target ?? activeDocument.map({ displayPath(Self.key(for: $0.url)) }),
+                  project.isSingleFileTarget(source) else {
+                return [.failure("Build", "Open a .c / .cpp file with main(), or add a CMakeLists.txt or Makefile.")]
+            }
+            guard let cc = ToolLocator.find("clang"), let cxx = ToolLocator.find("clang++") else {
+                return [.failure("Build", "clang not found: xcode-select --install")]
+            }
+            try? FileManager.default.createDirectory(at: project.buildDirectory, withIntermediateDirectories: true)
+            return [.fixed("Compile", project.compileSingleFileCommand(source: source, cCompiler: cc, cxxCompiler: cxx).command)]
+        }
+    }
+
+    func run(_ config: RunConfiguration) {
+        runPipeline(buildSteps(target: config.target), then: .run(config))
+    }
+
+    /// Runs `steps` one after another (stopping at the first failure), then `finish`.
+    func runPipeline(_ steps: [PipelineStep], then finish: PipelineFinish) {
+        guard rootURL != nil, !isRunning else { return }
+        saveAll()
+        output = ""
+        if case .tests = finish { bottomTab = .tests } else { bottomTab = .output }
+        isRunning = true
+        Task { await self.executePipeline(steps, then: finish) }
+    }
+
+    private func executePipeline(_ steps: [PipelineStep], then finish: PipelineFinish) async {
+        for step in steps {
+            switch step.resolve() {
+            case .failure(let error):
+                appendOutput(error.message + "\n")
+                isRunning = false
+                return
+            case .success(let command):
+                let status = await execute(command)
+                guard status == 0 else {
+                    appendOutput("\n[\(step.title.lowercased()) failed with status \(status)]\n")
+                    isRunning = false
+                    bottomTab = .output
+                    return
+                }
+            }
+        }
+        if !steps.isEmpty, case .none = finish { appendOutput("\n[build succeeded]\n") }
+        let project = self.project
+        switch finish {
+        case .none:
+            isRunning = false
+            refreshRunTargets()
+        case .run(let config):
+            guard let project, let program = project.executable(for: config.target) else {
+                appendOutput("\nCouldn't find the program for “\(config.target)” after building.\n")
+                isRunning = false
+                return
+            }
+            let env = config.environmentVariables
+            let envNote = env.isEmpty ? "" : env.keys.sorted().map { "\($0)=… " }.joined()
+            appendOutput("\n")
+            let status = await execute(Command(executable: program, arguments: config.argumentList,
+                                               directory: project.root, environment: env), echoPrefix: envNote)
+            appendOutput("\n[process exited with status \(status)]\n")
+            isRunning = false
+        case .tests(let command):
+            output = ""
+            let status = await execute(command, lineHandler: { self.consumeTestLine($0) })
+            let r = testReport
+            appendOutput("\n[\(r.passed) passed, \(r.failed) failed, \(r.skipped) skipped — exit \(status)]\n")
+            isRunning = false
+            if r.tests.isEmpty { bottomTab = .output }
+            selectedTestID = selectedTestID ?? r.tests.first { $0.status == .failed }?.id
+        case .debug(let config, let adapter, let project):
+            isRunning = false
+            guard let program = project.executable(for: config.target) else {
+                appendOutput("\nCouldn't find the program for “\(config.target)” after building.\n")
+                return
+            }
+            launchDebugger(config, program: program, adapter: adapter, project: project)
+        }
+    }
+
+    /// Runs one command, streaming its output; returns its exit status.
+    private func execute(_ command: Command, echoPrefix: String = "",
+                         lineHandler: (@MainActor (String) -> Void)? = nil) async -> Int32 {
+        if lineHandler == nil { appendOutput("$ \(echoPrefix)\(command.display)\n") }
         let process = Process()
-        process.executableURL = go
-        process.arguments = arguments
-        process.currentDirectoryURL = rootURL
-        process.environment = ToolLocator.environment().merging(extra) { $1 }
+        process.executableURL = command.executable
+        process.arguments = command.arguments
+        process.currentDirectoryURL = command.directory
+        process.environment = ToolLocator.environment().merging(command.environment) { $1 }
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
+        let buffer = LineBuffer()
+        let done = AsyncStream<Void>.makeStream()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty {
                 handle.readabilityHandler = nil
+                let rest = buffer.flush()
+                Task { @MainActor in
+                    if let lineHandler { rest.forEach(lineHandler) } else { rest.forEach { self.appendOutput($0) } }
+                    done.continuation.finish()
+                }
                 return
             }
-            let chunk = String(decoding: data, as: UTF8.self)
-            Task { @MainActor in self.appendOutput(chunk) }
-        }
-        process.terminationHandler = { proc in
-            let status = proc.terminationStatus
-            Task { @MainActor in
-                // Let any final output chunks land first.
-                try? await Task.sleep(for: .milliseconds(50))
-                self.isRunning = false
-                self.runProcess = nil
-                self.appendOutput("\n[process exited with status \(status)]\n")
+            if let lineHandler {
+                let lines = buffer.append(data)
+                if !lines.isEmpty { Task { @MainActor in lines.forEach(lineHandler) } }
+            } else {
+                let chunk = String(decoding: data, as: UTF8.self)
+                Task { @MainActor in self.appendOutput(chunk) }
             }
         }
-        do {
-            try process.run()
-            runProcess = process
-        } catch {
-            isRunning = false
-            appendOutput("Failed to start go: \(error.localizedDescription)\n")
+        let status = await withCheckedContinuation { (continuation: CheckedContinuation<Int32, Never>) in
+            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+            do {
+                try process.run()
+                runProcess = process
+            } catch {
+                appendOutput("Failed to start \(command.executable.lastPathComponent): \(error.localizedDescription)\n")
+                process.terminationHandler = nil
+                continuation.resume(returning: -1)
+            }
         }
+        runProcess = nil
+        // Let the last output land before reporting the status.
+        for await _ in done.stream {}
+        return status
     }
 
     func stopRun() {
@@ -2001,7 +2066,7 @@ final class Workspace {
         url.canonicalFileURL.path
     }
 
-    /// Files outside the project (stdlib, module cache) open read-only.
+    /// Files outside the project (SDK headers, the standard library) open read-only.
     private func isOutsideProject(_ url: URL) -> Bool {
         guard let rootURL else { return false }
         return !Self.key(for: url).hasPrefix(Self.key(for: rootURL) + "/")
@@ -2009,7 +2074,12 @@ final class Workspace {
 
     private static func defaultFile(in nodes: [FileNode]) -> URL? {
         let files = nodes.filter { !$0.isDirectory }
-        return (files.first { $0.name == "main.go" } ?? files.first { $0.url.pathExtension == "go" })?.url
+        let mains = ["main.cpp", "main.cc", "main.c", "main.cxx", "main.mm", "main.m"]
+        if let main = mains.lazy.compactMap({ name in files.first { $0.name == name } }).first { return main.url }
+        if let src = nodes.first(where: { $0.isDirectory && $0.name == "src" }), let children = src.children,
+           let inner = defaultFile(in: children) { return inner }
+        return (files.first { SourceKind.sourceExtensions.contains($0.url.pathExtension.lowercased()) }
+            ?? files.first { $0.name == "CMakeLists.txt" })?.url
     }
 }
 
@@ -2035,5 +2105,15 @@ final class LineBuffer: @unchecked Sendable {
             let rest = String(decoding: pending, as: UTF8.self)
             return rest.isEmpty ? [] : [rest]
         }
+    }
+}
+
+extension Workspace.PipelineStep {
+    static func fixed(_ title: String, _ command: Command) -> Self {
+        Self(title: title) { .success(command) }
+    }
+
+    static func failure(_ title: String, _ message: String) -> Self {
+        Self(title: title) { .failure(Workspace.PipelineError(message: message)) }
     }
 }

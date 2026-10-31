@@ -20,8 +20,8 @@ public final class LSPClient: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    /// Set GOIDE_LSP_TRACE=1 to log every message to stderr.
-    private static let trace = ProcessInfo.processInfo.environment["GOIDE_LSP_TRACE"] != nil
+    /// Set CPPIDE_LSP_TRACE=1 to log every message to stderr.
+    private static let trace = ProcessInfo.processInfo.environment["CPPIDE_LSP_TRACE"] != nil
     private var process: Process?
     private var stdin: FileHandle?
     private var framer = LSPFramer()

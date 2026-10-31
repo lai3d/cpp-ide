@@ -107,7 +107,7 @@ public enum ProjectSearch {
         return results.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    /// Regular files under `root`, skipping hidden files and FileNode.ignoredNames folders.
+    /// Regular files under `root`, skipping hidden files, FileNode.ignoredNames folders and build output.
     public static func files(under root: URL) -> [String] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
         guard let enumerator = FileManager.default.enumerator(
@@ -117,7 +117,9 @@ public enum ProjectSearch {
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true {
-                if FileNode.ignoredNames.contains(url.lastPathComponent) { enumerator.skipDescendants() }
+                if FileNode.ignoredNames.contains(url.lastPathComponent) || FileNode.isBuildOutput(url, root: root) {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
             guard values?.isRegularFile == true, (values?.fileSize ?? 0) <= maxFileSize else { continue }

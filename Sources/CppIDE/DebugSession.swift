@@ -32,7 +32,7 @@ final class VariableNode: Identifiable {
     }
 }
 
-/// One Delve debugging session, driven over DAP.
+/// One lldb-dap debugging session, driven over DAP.
 @MainActor
 @Observable
 final class DebugSession {
@@ -58,8 +58,8 @@ final class DebugSession {
 
     var isActive: Bool { state != .terminated }
 
-    /// Launches Delve, sets breakpoints (one-based lines per path) and starts the program.
-    func start(dlv: URL, directory: URL, launch: JSONValue, breakpoints: [String: [Int: String?]]) async {
+    /// Launches lldb-dap, sets breakpoints (one-based lines per path) and starts the program.
+    func start(adapter: URL, directory: URL, launch: JSONValue, breakpoints: [String: [Int: String?]]) async {
         client.onEvent = { event, body in
             Task { @MainActor in self.handle(event: event, body: body) }
         }
@@ -67,11 +67,11 @@ final class DebugSession {
             Task { @MainActor in self.finish() }
         }
         do {
-            try await client.start(dlv: dlv, directory: directory, environment: ToolLocator.environment()) { text in
+            try client.start(adapter: adapter, directory: directory, environment: ToolLocator.environment()) { text in
                 Task { @MainActor in self.onOutput?(text) }
             }
             try await client.request("initialize", arguments: [
-                "clientID": "cppide", "clientName": "CppIDE", "adapterID": "go",
+                "clientID": "cppide", "clientName": "CppIDE", "adapterID": "lldb-dap",
                 "linesStartAt1": true, "columnsStartAt1": true, "pathFormat": "path",
                 "supportsVariableType": true,
             ])
@@ -175,8 +175,8 @@ final class DebugSession {
         guard let body = try? await client.request("scopes", arguments: ["frameId": .int(frameID)]) else { return }
         let nodes = DebugVariable.parseScopes(body).map(VariableNode.init)
         scopes = nodes
-        // Locals (and Arguments) open by default; Globals stay collapsed (expensive).
-        for node in nodes where !node.name.lowercased().contains("global") {
+        // Locals (and Arguments) open by default; Globals and Registers stay collapsed (noisy, expensive).
+        for node in nodes where !["global", "register"].contains(where: node.name.lowercased().contains) {
             await expand(node)
         }
         await refreshWatches()
@@ -230,7 +230,7 @@ final class DebugSession {
               let body = try? await client.request("stackTrace", arguments: ["threadId": .int(threadID), "levels": 50])
         else { return }
         frames = StackFrame.parseAll(body)
-        // Start at the first frame with source (skips runtime frames without a path).
+        // Start at the first frame with source (skips libc / runtime frames without a path).
         if let frame = frames.first(where: { $0.path != nil }) ?? frames.first {
             await select(frameID: frame.id)
         }

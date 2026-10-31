@@ -28,13 +28,13 @@ struct EditorServices {
     var caretMoved: @MainActor (Int) -> Void
 }
 
-/// An NSTextView-based code editor with Go highlighting, diagnostics,
+/// An NSTextView-based code editor with C/C++ highlighting, diagnostics,
 /// completion (type or Esc), hover info, and ⌘-click go-to-definition.
 struct CodeEditorView: NSViewRepresentable {
     var text: String
-    var highlightGo: Bool
+    var highlightSyntax: Bool
     var isTestFile = false
-    var testStatuses: [String: GoTestResult.Status] = [:]
+    var testStatuses: [String: TestResult.Status] = [:]
     var breakpoints: Set<Int> = []
     var conditionalBreakpoints: Set<Int> = []
     var executionLine: Int?
@@ -152,9 +152,9 @@ struct CodeEditorView: NSViewRepresentable {
         if textView.string != text {
             // Changed programmatically (format, rename, reload); typing never gets here.
             coordinator.applyExternalChange(text)
-        } else if coordinator.appliedDiagnostics != diagnostics || coordinator.appliedHighlightGo != highlightGo {
+        } else if coordinator.appliedDiagnostics != diagnostics || coordinator.appliedHighlightSyntax != highlightSyntax {
             coordinator.applyStyling()
-            coordinator.scheduleInlayHints(after: .milliseconds(150))  // gopls re-checked the file
+            coordinator.scheduleInlayHints(after: .milliseconds(150))  // clangd re-checked the file
         }
         if coordinator.appliedShowInlayHints != showInlayHints || coordinator.appliedEpoch != languageServerEpoch {
             coordinator.appliedShowInlayHints = showInlayHints
@@ -207,7 +207,7 @@ struct CodeEditorView: NSViewRepresentable {
         weak var textView: CodeTextView?
         weak var ruler: LineNumberRulerView?
         var appliedDiagnostics: [Diagnostic] = []
-        var appliedHighlightGo = false
+        var appliedHighlightSyntax = false
         var lastRevealID: UUID?
         var lastQuickFixRequest = 0
         var lastFoldRequestID: UUID?
@@ -269,7 +269,7 @@ struct CodeEditorView: NSViewRepresentable {
                 isApplyingCommand = false
                 autoPairs.append(AutoPair(open: caret - 1, close: caret))
             }
-            guard parent.highlightGo, !isApplyingCompletion, !isApplyingExternalChange, !isApplyingCommand else { return }
+            guard parent.highlightSyntax, !isApplyingCompletion, !isApplyingExternalChange, !isApplyingCommand else { return }
 
             // Parameter hints: open on "(" / ",", follow edits while open.
             if typed == "(" || typed == "," {
@@ -279,7 +279,7 @@ struct CodeEditorView: NSViewRepresentable {
             }
 
             if let typed, typed.utf16.count == 1, let unit = typed.utf16.first,
-               unit == 0x2E || GoIdentifier.isIdentifier(unit) {
+               unit == 0x2E || Identifier.isIdentifier(unit) {
                 if unit == 0x2E {  // "." starts a fresh member completion
                     completionItems = []
                     completionPopup.hide()
@@ -354,7 +354,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         // MARK: Folding
 
-        /// Foldable regions from gopls: the line they start on and the range folding hides.
+        /// Foldable regions from clangd: the line they start on and the range folding hides.
         private var foldRegions: [(line: Int, range: NSRange)] = []
         /// Currently folded (hidden) ranges, sorted. Mirrored into `foldingDelegate` for layout.
         private(set) var folded: [NSRange] = [] {
@@ -469,7 +469,7 @@ struct CodeEditorView: NSViewRepresentable {
             let color: NSColor
         }
 
-        /// gopls semantic coloring, layered over the regex lexer.
+        /// clangd semantic coloring, layered over the regex lexer.
         private var semanticRuns: [SemanticRun] = []
         var appliedShowInlayHints: Bool?
         var appliedEpoch: Int?
@@ -479,7 +479,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         func scheduleInlayHints(after delay: Duration) {
             inlayTask?.cancel()
-            guard parent.highlightGo else {
+            guard parent.highlightSyntax else {
                 if !placedHints.isEmpty || !semanticRuns.isEmpty {
                     placedHints = []
                     semanticRuns = []
@@ -513,7 +513,7 @@ struct CodeEditorView: NSViewRepresentable {
                     guard let color = EditorTheme.color(forSemantic: token.type, modifiers: token.modifiers) else { return nil }
                     let start = index.offset(of: TextPosition(line: token.line, character: token.start))
                     let range = NSRange(location: start, length: token.length)
-                    // gopls marks import paths ("fmt") as namespaces: keep them string-colored.
+                    // Never recolor inside string literals (e.g. a namespace token in an #include path).
                     guard NSMaxRange(range) <= ns.length, ns.character(at: start) != 0x22 else { return nil }
                     return SemanticRun(range: range, color: color)
                 }
@@ -582,7 +582,7 @@ struct CodeEditorView: NSViewRepresentable {
                 items.append(CodeTextView.InlayItem(offset: fold.location, label: label, width: width,
                                                     padLeft: 2, padRight: 2, isFold: true))
             }
-            guard parent.highlightGo, parent.showInlayHints, !placedHints.isEmpty else {
+            guard parent.highlightSyntax, parent.showInlayHints, !placedHints.isEmpty else {
                 textView.inlayItems = items
                 return
             }
@@ -611,14 +611,14 @@ struct CodeEditorView: NSViewRepresentable {
         /// Highlights other uses of the symbol at the caret, after a short pause.
         private func scheduleOccurrences() {
             occurrenceTask?.cancel()
-            guard let textView, parent.highlightGo, textView.selectedRange().length == 0 else {
+            guard let textView, parent.highlightSyntax, textView.selectedRange().length == 0 else {
                 clearOccurrences()
                 return
             }
             let offset = textView.selectedRange().location
             let ns = textView.string as NSString
             // Only when the caret touches an identifier (either side of it).
-            guard GoIdentifier.wordRange(in: ns, at: offset) != nil || GoIdentifier.wordRange(in: ns, at: offset - 1) != nil else {
+            guard Identifier.wordRange(in: ns, at: offset) != nil || Identifier.wordRange(in: ns, at: offset - 1) != nil else {
                 clearOccurrences()
                 return
             }
@@ -708,7 +708,7 @@ struct CodeEditorView: NSViewRepresentable {
             switch selector {
             case #selector(NSResponder.cancelOperation(_:)), #selector(NSTextView.complete(_:)):
                 // Esc / ⌥Esc: show completions on demand.
-                if parent.highlightGo && textView.isEditable { scheduleCompletion(after: .zero) }
+                if parent.highlightSyntax && textView.isEditable { scheduleCompletion(after: .zero) }
                 return true
             case #selector(NSResponder.insertNewline(_:)):
                 autoIndentNewline(in: textView)
@@ -749,7 +749,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         /// Returns false to swallow the change (handled here), nil to let it through.
         private func handleAutoPair(_ textView: NSTextView, range: NSRange, replacement: String?) -> Bool? {
-            guard parent.highlightGo, let replacement else { return nil }
+            guard parent.highlightSyntax, let replacement else { return nil }
             let ns = textView.string as NSString
             if replacement.count == 1, let character = replacement.first, range.length == 0 {
                 // Typing a closer exactly where ours sits: step over it.
@@ -907,9 +907,9 @@ struct CodeEditorView: NSViewRepresentable {
             }
             let ns = textView.string as NSString
             let caret = textView.selectedRange().location
-            let start = GoIdentifier.prefixStart(in: ns, before: caret)
+            let start = Identifier.prefixStart(in: ns, before: caret)
             let prefix = ns.substring(with: NSRange(location: start, length: caret - start))
-            if let first = prefix.utf16.first, !GoIdentifier.isIdentifierStart(first) {
+            if let first = prefix.utf16.first, !Identifier.isIdentifierStart(first) {
                 completionPopup.hide()  // typing a number
                 return
             }
@@ -938,7 +938,7 @@ struct CodeEditorView: NSViewRepresentable {
 
             let caret = textView.selectedRange().location
             let ns = textView.string as NSString
-            let start = GoIdentifier.prefixStart(in: ns, before: caret)
+            let start = Identifier.prefixStart(in: ns, before: caret)
             // Snippets keep the line's indentation on their following lines.
             let lineStart = ns.lineRange(for: NSRange(location: start, length: 0)).location
             let indent = String(ns.substring(with: NSRange(location: lineStart, length: start - lineStart)).prefix { $0 == "\t" || $0 == " " })
@@ -1015,7 +1015,7 @@ struct CodeEditorView: NSViewRepresentable {
                     return
                 }
                 // Anchor at the callee (`fmt.Printf`), like Xcode/VS Code, so it stays put while typing.
-                let start = GoIdentifier.callStart(in: textView.string as NSString, before: offset) ?? offset
+                let start = Identifier.callStart(in: textView.string as NSString, before: offset) ?? offset
                 let anchor = textView.firstRect(forCharacterRange: NSRange(location: start, length: 0), actualRange: nil)
                 self.signaturePopup.show(help, above: anchor, in: window)
             }
@@ -1030,8 +1030,8 @@ struct CodeEditorView: NSViewRepresentable {
         // MARK: Hover
 
         func mouseMoved(to index: Int?) {
-            guard parent.highlightGo, let textView, !completionPopup.isVisible else { return }
-            guard let index, let word = GoIdentifier.wordRange(in: textView.string as NSString, at: index) else {
+            guard parent.highlightSyntax, let textView, !completionPopup.isVisible else { return }
+            guard let index, let word = Identifier.wordRange(in: textView.string as NSString, at: index) else {
                 endHover()
                 return
             }
@@ -1039,7 +1039,7 @@ struct CodeEditorView: NSViewRepresentable {
             endHover()
             hoverWord = word
             let ns = textView.string as NSString
-            let expression = GoIdentifier.expressionRange(in: ns, at: index).map { ns.substring(with: $0) }
+            let expression = Identifier.expressionRange(in: ns, at: index).map { ns.substring(with: $0) }
             hoverTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(450))
                 guard !Task.isCancelled, let self else { return }
@@ -1093,7 +1093,7 @@ struct CodeEditorView: NSViewRepresentable {
             let length = max(0, min(reveal.length, text.length - location))
             let highlight = length > 0
                 ? NSRange(location: location, length: length)
-                : GoIdentifier.wordRange(in: text, at: location) ?? NSRange(location: location, length: 0)
+                : Identifier.wordRange(in: text, at: location) ?? NSRange(location: location, length: 0)
             textView.window?.makeFirstResponder(textView)
             textView.setSelectedRange(NSRange(location: location, length: length))
             scrollToReveal(highlight, in: scrollView)
@@ -1147,14 +1147,14 @@ struct CodeEditorView: NSViewRepresentable {
 
         private var testMarkerKey = ""
 
-        /// ▶ / ✓ / ✗ next to test functions in _test.go files.
+        /// ▶ / ✓ / ✗ next to GoogleTest / Catch2 tests.
         func updateTestMarkers(force: Bool = false) {
             guard let textView, let ruler else { return }
             guard parent.isTestFile else {
                 if !ruler.testMarkers.isEmpty { ruler.testMarkers = [:] }
                 return
             }
-            let tests = GoTestFinder.testFunctions(in: textView.string)
+            let tests = TestFinder.testFunctions(in: textView.string)
             let key = tests.map { "\($0.name)@\($0.line):\(String(describing: parent.testStatuses[$0.name]))" }.joined(separator: ",")
             guard force || key != testMarkerKey else { return }
             testMarkerKey = key
@@ -1166,13 +1166,13 @@ struct CodeEditorView: NSViewRepresentable {
 
         func commandClick(at index: Int) {
             dismissPopups()
-            guard parent.highlightGo else { return }
+            guard parent.highlightSyntax else { return }
             parent.services.definition(index)
         }
 
         /// Language actions at the top of the editor's right-click menu.
         func contextMenuItems(at offset: Int) -> [NSMenuItem] {
-            guard parent.highlightGo else { return [] }
+            guard parent.highlightSyntax else { return [] }
             dismissPopups()
             return [
                 ActionMenuItem(title: "Jump to Definition") { [weak self] in self?.parent.services.definition(offset) },
@@ -1189,7 +1189,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         /// Pops up the code actions for the caret/selection below the caret (⌥↩).
         func showQuickFixes() {
-            guard let textView, parent.highlightGo else { return }
+            guard let textView, parent.highlightSyntax else { return }
             dismissPopups()
             let selection = textView.selectedRange()
             Task { [weak self] in
@@ -1246,8 +1246,8 @@ struct CodeEditorView: NSViewRepresentable {
 
             storage.beginEditing()
             storage.setAttributes(EditorTheme.baseAttributes(parent.settings), range: fullRange)
-            if parent.highlightGo {
-                for token in GoHighlighter.tokenize(text) {
+            if parent.highlightSyntax {
+                for token in CppHighlighter.tokenize(text) {
                     storage.addAttribute(.foregroundColor, value: EditorTheme.color(for: token.kind), range: token.range)
                 }
                 for run in semanticRuns where NSMaxRange(run.range) <= storage.length {
@@ -1280,7 +1280,7 @@ struct CodeEditorView: NSViewRepresentable {
             updateFoldMarkers()
 
             appliedDiagnostics = parent.diagnostics
-            appliedHighlightGo = parent.highlightGo
+            appliedHighlightSyntax = parent.highlightSyntax
         }
     }
 }

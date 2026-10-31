@@ -2,42 +2,43 @@
 
 [![CI](https://github.com/lai3d/cpp-ide/actions/workflows/ci.yml/badge.svg)](https://github.com/lai3d/cpp-ide/actions/workflows/ci.yml)
 
-A native macOS IDE for Go, written in Swift (SwiftUI + AppKit).
+A native macOS IDE for C and C++, written in Swift (SwiftUI + AppKit).
 
-> Early but usable: editing, navigation, refactoring, testing and debugging for Go modules.
+> Early but usable: editing, navigation, refactoring, building, testing and debugging for CMake,
+> Makefile and single-file C/C++ projects. Forked from [GoIDE](https://github.com/lai3d/golang-ide).
 
 ## Features
 
 **Editor**
 - Tabs with independent buffers, undo and scroll; unsaved-changes prompts
-- Go syntax highlighting refined by gopls semantic tokens; inlay hints for parameter names and inferred types
+- C / C++ / Objective-C highlighting (raw strings, preprocessor, `#include <…>`) refined by clangd semantic tokens; inlay hints for parameter names and deduced types
 - Line-number gutter with error/warning markers, Git change bars and code folding (⌥⌘← / ⌥⌘→)
-- Occurrence highlights for the symbol under the caret; current-line highlight, auto-indent
-- Auto-closing brackets and quotes, toggle comment (⌘/), move / duplicate lines, indent / outdent
-- Snippets: gopls call placeholders and built-ins (`iferr`, `fori`, `forr`, `tt`, …) with Tab stops
-- Breadcrumbs (folder › file › type › function) above the editor
-- Format on save (gofmt + organize imports via gopls), Format Document (⌥⇧F)
+- Occurrence highlights, current-line highlight, auto-indent, auto-closing brackets and quotes
+- Toggle comment (⌘/), move / duplicate lines, indent / outdent
+- Snippets: clangd call placeholders and built-ins (`fori`, `forr`, `class`, `ns`, `guard`, `once`, `test`, …) with Tab stops
+- Breadcrumbs (folder › file › namespace › class › function) above the editor
+- clang-format via clangd: Format Document (⌥⇧F), optional format on save (honors `.clang-format`)
 
 **Project**
-- Sidebar file tree that follows changes on disk (FSEvents); new/rename/trash from the context menu
-- Open files reload when changed externally (or offer Reload / Keep Mine if you have edits)
-- Find in project (⇧⌘F): match case, whole word, regex
+- Sidebar file tree that follows changes on disk (FSEvents); new/rename/trash from the context menu (new headers start with `#pragma once`)
+- Find in project (⇧⌘F): match case, whole word, regex — build directories are skipped
 - Open Quickly (⌘P / ⇧⌘O): fuzzy file finder + workspace symbols; Outline sidebar for the current file
-- Git: status badges in the sidebar, branch in the title bar, inline blame for the caret line
-- Multiple windows, one project each (⇧⌘N)
-- Integrated terminal (⌃`) running your login shell in the project folder
+- Switch between header and source (⌃⌘↑)
+- Git: status badges, branch in the title bar, inline blame, diff against HEAD, stage/commit
+- Multiple windows, one project each (⇧⌘N); integrated terminal (⌃`)
 
-**Language (gopls)**
-- Live diagnostics: underlines, gutter dots, Problems panel
-- Completion with auto-imports, hover docs, signature help while typing calls
+**Language (clangd)**
+- Live diagnostics and clang-tidy checks: underlines, gutter dots, Problems panel
+- Completion with header insertion, hover docs, signature help while typing calls
 - Jump to definition (⌘-click / ⌃⌘J), implementation (⌥⌘J), type definition (⌃⌥⌘J) and back (⌃⌘←); find references (⇧⌘R), call hierarchy (⌃⌥H)
 - Rename symbol across files (⌃⌘E), quick fixes and refactorings (⌥↩)
 
-**Run, test & debug**
-- Run configurations (main package, arguments, environment) for Run (⌘R) and Debug; `go build ./...` (⌘B), stop (⌘.)
-- Test coverage (⌃⇧⌘U): covered / uncovered lines tinted, per-file percentages
-- Tests via `go test -json` (⌘U all, ⌃⌘U package, ⌃⌥⌘U at cursor): Tests panel, gutter ▶ / ✓ / ✗
-- Debugger (Delve DAP, ⌥⌘R): click line numbers for breakpoints, continue / step over (F6) / into (F7) / out (F8), call stack, expandable variables; debug a single test
+**Build, run, test & debug**
+- **CMake**: configures `build/` on first build (Debug, Ninja when installed, `compile_commands.json` exported so clangd sees real flags), then `cmake --build`; Reconfigure and Clean in the Build menu
+- **Make**: runs `make -jN`; **no build system**: compiles the active file with clang/clang++ (`-g -O0 -Wall -Wextra`) into `build/`
+- Run configurations (CMake executable target or source file, arguments, environment) for Run (⌘R) and Debug (⌥⌘R); compiler output `file.cpp:12:5` references are clickable
+- Tests via CTest (⌘U all, ⌃⌥⌘U at cursor): Tests panel with per-test output; GoogleTest / Catch2 tests get gutter ▶ / ✓ / ✗
+- Debugger (lldb-dap): click line numbers for breakpoints (with conditions), continue / step over (F6) / into (F7) / out (F8), call stack, expandable variables, watches, hover evaluation
 
 See [ROADMAP.md](ROADMAP.md) for what's next.
 
@@ -45,11 +46,12 @@ See [ROADMAP.md](ROADMAP.md) for what's next.
 
 - macOS 14+
 - Swift 6 toolchain (Xcode 16 or later)
-- Go, plus gopls and Delve:
-  `go install golang.org/x/tools/gopls@latest`
-  `go install github.com/go-delve/delve/cmd/dlv@latest`
+- Xcode or the Command Line Tools (`xcode-select --install`) for clang, clangd and make;
+  the debugger uses Xcode's `lldb-dap` (or Homebrew LLVM's)
+- For CMake projects: `brew install cmake` (and optionally `ninja`)
 
-CppIDE looks for `go`, `gopls` and `dlv` on `PATH`, `$GOBIN`, `$GOPATH/bin`, `~/go/bin`, `/opt/homebrew/bin` and `/usr/local/go/bin`, so it works when launched from Finder too.
+CppIDE looks for tools on `PATH`, Homebrew (`/opt/homebrew/bin`, keg-only `opt/llvm/bin`) and
+`xcrun`, so it works when launched from Finder too. Paths can be overridden in Settings ▸ Toolchain.
 
 ## Install
 
@@ -61,7 +63,7 @@ right-click the app and choose **Open** (or run `xattr -dr com.apple.quarantine 
 
 ```sh
 swift run CppIDE Examples/hello     # run in debug, opening the example project
-swift test                         # unit tests + a gopls end-to-end test
+swift test                         # unit tests + clangd / lldb-dap end-to-end tests
 ./scripts/bundle.sh                # build build/CppIDE.app + CppIDE.zip (release, ad-hoc signed)
 open build/CppIDE.app
 ```
@@ -72,10 +74,11 @@ You can also open `Package.swift` in Xcode.
 
 | Path | What |
 |---|---|
-| `Sources/CppIDECore` | UI-independent core: JSON-RPC/LSP client, message framing, Go highlighter, LSP position math, file tree |
+| `Sources/CppIDECore` | UI-independent core: JSON-RPC/LSP client, DAP client, C/C++ highlighter, CMake/CTest models, LSP position math, file tree |
 | `Sources/CppIDE` | SwiftUI app: workspace state, editor view, sidebar, panels |
 | `Tests/CppIDECoreTests` | swift-testing tests |
-| `Examples/hello` | Small Go module for trying things out |
+| `Examples/hello` | Small CMake project (library, executable, CTest tests) |
+| `Examples/single` | A lone C file (no build system) |
 | `scripts/` | `bundle.sh` (app bundle), `make-icon.swift` (regenerates `Resources/AppIcon.icns`) |
 | `.github/workflows/` | CI (build, test, bundle) and tagged releases (`v*` → GitHub Release) |
 

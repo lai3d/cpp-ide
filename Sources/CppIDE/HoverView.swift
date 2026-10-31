@@ -1,7 +1,7 @@
 import CppIDECore
 import SwiftUI
 
-/// Renders gopls hover markdown: Go signatures in monospace, docs as inline markdown.
+/// Renders clangd hover markdown: signatures in monospace, docs as inline markdown.
 struct HoverView: View {
     let markdown: String
 

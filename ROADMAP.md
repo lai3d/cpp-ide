@@ -4,90 +4,43 @@ Status: ✅ done · 🚧 in progress · ⏸ waiting on a decision · ⬜ planned
 
 Estimates are Claude Code session time.
 
-## Done
+## Phase 0 — Fork from GoIDE (2026-11-01)
 
-- ✅ App scaffold: sidebar, editor, Go highlighting, Problems/Output panels, go build/test/run
-- ✅ gopls over LSP: live diagnostics
-- ✅ Completion (with auto-imports), hover, go to definition + back stack
-
-## Phase 1 — Editor essentials
+The editor, LSP/DAP plumbing, Git, terminal, search, multi-window and session features come from
+[GoIDE](https://github.com/lai3d/golang-ide); this phase swapped the language layer.
 
 | # | Item | Notes | Est. |
 |---|---|---|---|
-| 1.1 | ✅ Line-number gutter | Ruler with line numbers, current-line highlight, error/warning markers | 0.3h |
-| 1.2 | ✅ Tabs | Multiple open files; each keeps its own buffer, undo, scroll, dirty state; ⌘W closes, ⌃⇥ cycles | 0.7h |
-| 1.3 | ✅ Format on save | gopls `textDocument/formatting` + organize imports; manual ⌥⇧F, toggle in Go menu | 0.4h |
-| 1.4 | ✅ File system | Watch the folder (FSEvents) to refresh the tree and reload unmodified open files; new file/folder, rename, move to Trash | 0.6h |
-| 1.5 | ✅ Find in project | ⌘⇧F search panel (literal / regex, case), results grouped by file, click to jump | 0.5h |
+| 0.1 | ✅ clangd | Language server with background index, clang-tidy, IWYU header insertion; `languageId` per extension; `compile_commands.json` changes forwarded | 0.5h |
+| 0.2 | ✅ C/C++ highlighter | Regex lexer: comments, raw strings, char literals, preprocessor, `#include <…>`, numeric suffixes / `'` separators; clangd semantic tokens on top | 0.3h |
+| 0.3 | ✅ Build systems | CMake (configure on first build, Debug, Ninja if present, File API for target artifacts), Make, single-file clang/clang++ | 0.8h |
+| 0.4 | ✅ Run configurations | CMake executable targets / files with `main()`, arguments, environment | 0.3h |
+| 0.5 | ✅ CTest | Streamed `ctest --output-on-failure` parsing into the Tests panel; GoogleTest / Catch2 gutter markers and run-at-cursor | 0.5h |
+| 0.6 | ✅ lldb-dap debugger | DAP over stdio (Xcode's or Homebrew LLVM's lldb-dap); breakpoints, conditions, stepping, locals, watches | 0.5h |
+| 0.7 | ✅ C++ niceties | Switch header/source (⌃⌘↑), C++ snippets, `#pragma once` / `#include` file templates, clang-format via clangd | 0.3h |
+| 0.8 | ✅ Port tests, CI, icon, README | clangd / lldb-dap end-to-end tests; CI installs CMake + Ninja | 0.7h |
 
-## Phase 2 — Language intelligence
-
-| # | Item | Notes | Est. |
-|---|---|---|---|
-| 2.1 | ✅ Signature help | Parameter hints while typing a call (`(` / `,`) | 0.4h |
-| 2.2 | ✅ Find references | ⇧⌘R / context menu, results in a References panel | 0.4h |
-| 2.3 | ✅ Rename symbol | `prepareRename` + `textDocument/rename` (⌃⌘E / context menu), WorkspaceEdit across files | 0.4h |
-| 2.4 | ✅ Quick fixes | Code actions at the caret (⌥↩ / context menu): quick fixes, refactorings, source actions | 0.5h |
-| 2.5 | ✅ Navigation | Open Quickly (⌘P / ⇧⌘O): fuzzy files + workspace symbols; Outline sidebar | 0.7h |
-
-## Phase 3 — Run & debug
+## Phase 1 — C/C++ depth
 
 | # | Item | Notes | Est. |
 |---|---|---|---|
-| 3.1 | ✅ Test integration | `go test -json` runner: Tests panel, gutter ▶ / ✓ / ✗ per test, run at cursor / package / all, clickable `file.go:N` | 0.7h |
-| 3.2 | ✅ Debugger (Delve DAP) | Gutter breakpoints, launch/continue/step/stop, call stack, variables, debug single tests | 2–3h |
+| 1.1 | ⬜ Build configurations | Debug / Release / RelWithDebInfo switcher (separate `build-<config>` dirs); `CMakePresets.json` support | 0.8h |
+| 1.2 | ⬜ Problems from the build | Parse compiler `file:line:col: error:` lines into the Problems panel (not only clangd's) and color errors in Output | 0.4h |
+| 1.3 | ⬜ Coverage | `-fprofile-instr-generate -fcoverage-mapping` + `llvm-cov export` → existing coverage tint | 1h |
+| 1.4 | ⬜ Sanitizers | Toggle ASan / UBSan / TSan for a build configuration; make sanitizer reports clickable | 0.5h |
+| 1.5 | ⬜ Attach to process | Pick a running process (DAP `attach` with `pid`) | 0.4h |
+| 1.6 | ⬜ Disassembly & memory | DAP `disassemble` / `readMemory` views while paused; registers scope | 1.5h |
+| 1.7 | ⬜ Inactive regions | Dim `#if 0` / disabled preprocessor branches (clangd inactiveRegions) | 0.3h |
+| 1.8 | ⬜ CMake language support | Highlighting + completion for CMakeLists.txt (neocmakelsp if installed) | 0.6h |
+| 1.9 | ⬜ Single-file flags | Per-folder `compile_flags.txt` editor (standard, include dirs, defines) used by both clangd and the compile step | 0.4h |
+| 1.10 | ⬜ Package managers | vcpkg / Conan toolchain file detection when configuring | 0.6h |
 
-## Phase 4 — Polish & release
+## Phase 2 — Distribution
 
 | # | Item | Notes | Est. |
 |---|---|---|---|
-| 4.1 | ✅ Settings | ⌘, — font size, tab width, format on save, go/gopls/dlv path overrides | 0.5h |
-| 4.2 | ✅ CI & packaging | GitHub Actions build + test + bundle, app icon, tagged releases with `CppIDE.zip` | 0.5h |
+| 2.1 | ⬜ First release | Tag `v0.1.0`; verify the bundled app opens a window when launched with a folder (`NSTreatUnknownArgumentsAsOpen`) | 0.3h |
+| 2.2 | ⬜ IDE Toolbox | Add CppIDE to the Toolbox catalog; shared recents already written | 0.2h |
 
 **User must do manually** (duration outside Claude's control): Apple Developer Program enrollment,
 Developer ID certificate, notarization credentials — only needed to ship a signed/notarized build to others.
-
-## Phase 5 — Deeper language features & Git
-
-Released so far: [v0.1.0](https://github.com/lai3d/cpp-ide/releases/tag/v0.1.0) (phases 1–4).
-
-| # | Item | Notes | Est. |
-|---|---|---|---|
-| 5.1 | ✅ Occurrence highlights | Highlight other uses of the symbol under the caret (`textDocument/documentHighlight`) | 0.3h |
-| 5.2 | ✅ Inlay hints | Parameter names and inferred types inline (`textDocument/inlayHint`), toggle in Settings | 0.5h |
-| 5.3 | ✅ Semantic highlighting | gopls semantic tokens over the regex lexer: types, params, consts, packages, fields | 0.6h |
-| 5.4 | ✅ Call hierarchy | Incoming / outgoing calls tree for the function at the caret | 0.5h |
-| 5.5 | ✅ Git status | Sidebar badges (M / A / ? / D), gutter change bars vs HEAD, branch in the toolbar | 0.7h |
-| 5.6 | ✅ Inline blame | Author, date and summary of the caret line's last commit, at the end of the line | 0.4h |
-| 5.7 | ✅ Multiple windows | One project per window (File ▸ New Window, ⇧⌘N) | 0.8h |
-| 5.8 | ✅ Code folding | `textDocument/foldingRange`; gutter chevrons, `{⋯}` placeholders, ⌥⌘← / ⌥⌘→, fold/unfold all (⇧⌥⌘← / →) | 1h |
-
-## Phase 6 — Everyday workflow
-
-| # | Item | Notes | Est. |
-|---|---|---|---|
-| 6.1 | ✅ Session restore | Recent projects on the welcome screen; reopen the last project's tabs | 0.4h |
-| 6.2 | ✅ Replace in project | Replace field in the search sidebar: preview, replace one / all (undoable in open files) | 0.5h |
-| 6.3 | ✅ Diff vs HEAD | Side-by-side diff of the current file against HEAD | 0.6h |
-| 6.4 | ✅ Source control panel | Changed files, stage / unstage / discard, commit message + commit | 0.8h |
-| 6.5 | ✅ Debugger extras | Conditional breakpoints, hover to evaluate while paused, watch expressions | 0.7h |
-| 6.6 | ✅ Integrated terminal | SwiftTerm (PTY + xterm emulation): login shell in the project folder, ⌃`, survives tab switches, restart on exit | 0.8h |
-| 6.7 | ✅ Go module tools | Go menu: vet (⌃⌥⌘V), generate, Modules ▸ tidy / update / download / verify; clickable `file.go:N` in Output | 0.3h |
-
-## Phase 7 — Productivity
-
-Released so far: [v0.2.0](https://github.com/lai3d/cpp-ide/releases/tag/v0.2.0) (phases 1–6).
-
-| # | Item | Notes | Est. |
-|---|---|---|---|
-| 7.1 | ✅ Editing commands | Toggle comment (⌘/), auto-close brackets & quotes, move line (⌥⌘[ / ⌥⌘]), duplicate line (⇧⌘D), indent / outdent (⌘] / ⌘[) | 0.6h |
-| 7.2 | ✅ Snippets | gopls snippet completions with tab stops; built-in Go snippets (`iferr`, `fori`, `forr`, `func`, `test`, …) | 0.8h |
-| 7.3 | ✅ Implementations | Jump to Implementation (⌥⌘J), Jump to Type Definition (⌃⌥⌘J), context menu; several results list in References | 0.3h |
-| 7.4 | ✅ Breadcrumbs | Path › type › function above the editor, following the caret | 0.4h |
-| 7.5 | ✅ Test coverage | Go ▸ Test with Coverage (⌃⇧⌘U): covered / uncovered lines tinted, total and per-file % in the Tests panel | 0.7h |
-| 7.6 | ✅ Run configurations | Toolbar picker + Edit Configurations sheet: main package (auto-detected `cmd/…`), arguments, environment; used by Run and Debug | 0.6h |
-
-## Later / ideas
-
-- tree-sitter-go for incremental parsing (if semantic tokens + the regex lexer fall short)
-- Developer ID signing + notarization in the release workflow (needs the user's Apple Developer account)

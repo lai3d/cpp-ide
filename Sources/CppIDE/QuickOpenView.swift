@@ -107,14 +107,14 @@ struct QuickOpenView: View {
     }
 }
 
-/// Sidebar outline of the active Go file (textDocument/documentSymbol).
+/// Sidebar outline of the active C/C++ file (textDocument/documentSymbol).
 struct OutlineView: View {
     @Environment(Workspace.self) private var workspace
 
     var body: some View {
         Group {
             if workspace.outline.isEmpty {
-                Text(workspace.isGoFile ? "No symbols" : "Open a Go file to see its outline.")
+                Text(workspace.isSourceFile ? "No symbols" : "Open a C/C++ file to see its outline.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

@@ -81,7 +81,7 @@ private struct CallRow: View {
         }
     }
 
-    /// Project-relative path, or just `pkg/file.go` for the standard library and module cache.
+    /// Project-relative path, or just the file name for SDK and library headers.
     private func shortPath(_ path: String) -> String {
         let display = workspace.displayPath(path)
         guard display == path else { return display }

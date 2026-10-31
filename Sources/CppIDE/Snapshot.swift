@@ -88,8 +88,8 @@ enum Snapshot {
                 try? await Task.sleep(for: .milliseconds(1200))
             }
             if args.contains("--snapshot-tests"), let workspace {
-                workspace.runTests(.all, coverage: args.contains("--snapshot-coverage"))
-                for _ in 0..<150 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+                workspace.runTests(.all)
+                for _ in 0..<600 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
                 try? await Task.sleep(for: .milliseconds(500))
             }
             if let lines = value("--snapshot-debug"), let workspace, let document = workspace.activeDocument {
@@ -101,7 +101,7 @@ enum Snapshot {
                     workspace.setBreakpointConditionForTesting(condition, in: document, line: line - 1)
                 }
                 workspace.startDebugging()
-                for _ in 0..<200 where workspace.debugSession?.state != .stopped {
+                for _ in 0..<600 where workspace.debugSession?.state != .stopped {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
                 for watch in (value("--snapshot-watch") ?? "").split(separator: ",") {
@@ -166,9 +166,9 @@ enum Snapshot {
                 workspace.commitMessage = "Refine order summary"
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            if let command = value("--snapshot-go"), let workspace {
-                workspace.runGo(command.split(separator: " ").map(String.init))
-                for _ in 0..<100 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+            if args.contains("--snapshot-build"), let workspace {
+                workspace.build()
+                for _ in 0..<600 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
                 try? await Task.sleep(for: .milliseconds(300))
             }
             if let input = value("--snapshot-terminal"), let workspace {
@@ -186,19 +186,19 @@ enum Snapshot {
                 }
                 try? await Task.sleep(for: .milliseconds(300))
             }
-            if ProcessInfo.processInfo.environment["GOIDE_DEBUG_TEXT"] != nil, let text = workspace?.activeDocument?.text {
+            if ProcessInfo.processInfo.environment["CPPIDE_DEBUG_TEXT"] != nil, let text = workspace?.activeDocument?.text {
                 print(text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
                     .map { "\($0.offset + 1): \($0.element.debugDescription)" }.joined(separator: "\n"))
             }
             if args.contains("--snapshot-runconfigs"), let workspace {
-                if let index = workspace.runConfigurations.firstIndex(where: { $0.name == "server" }) {
-                    workspace.runConfigurations[index].arguments = "-port 8080 --name \"demo app\""
+                if let index = workspace.runConfigurations.firstIndex(where: { $0.name == "hello" }) {
+                    workspace.runConfigurations[index].arguments = "--name \"demo app\""
                     workspace.runConfigurations[index].environment = "LOG_LEVEL=debug"
                     workspace.selectedRunConfigurationID = workspace.runConfigurations[index].id
                 }
                 if args.contains("--snapshot-run") {
                     workspace.runSelectedConfiguration()
-                    for _ in 0..<100 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+                    for _ in 0..<600 where workspace.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
                     print("run output:\n" + workspace.output)
                 }
                 workspace.isEditingRunConfigurations = true
@@ -209,7 +209,7 @@ enum Snapshot {
                 try? await Task.sleep(for: .milliseconds(300))
             }
 
-            if ProcessInfo.processInfo.environment["GOIDE_DEBUG_LAYOUT"] != nil,
+            if ProcessInfo.processInfo.environment["CPPIDE_DEBUG_LAYOUT"] != nil,
                let textView = NSApp.windows.first?.firstResponder as? NSTextView, let scroll = textView.enclosingScrollView {
                 print("clip bounds=\(scroll.contentView.bounds) insets=\(scroll.contentView.contentInsets) scroll=\(scroll.frame)")
             }
@@ -233,7 +233,7 @@ enum Snapshot {
                 print("snapshot failed: no window")
             }
             if let workspace, workspace.isDebugging {
-                workspace.stopDebugging()  // don't leave dlv behind
+                workspace.stopDebugging()  // don't leave lldb-dap behind
                 try? await Task.sleep(for: .milliseconds(800))
             }
             exit(0)  // skip the unsaved-changes prompt

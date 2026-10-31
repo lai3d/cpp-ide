@@ -36,7 +36,7 @@ public struct Snippet: Sendable, Hashable {
             while i < chars.count {
                 let c = chars[i]
                 if c == "\\", i + 1 < chars.count, "$}\\,|".contains(chars[i + 1]) {
-                    // Only these are escapable; any other backslash is literal (e.g. "\n" in Go strings).
+                    // Only these are escapable; any other backslash is literal (e.g. "\n" in C strings).
                     append(chars[i + 1])
                     i += 2
                 } else if untilBrace, c == "}" {
@@ -93,24 +93,36 @@ public struct Snippet: Sendable, Hashable {
     }
 }
 
-/// Built-in Go snippets, offered in completion by trigger word.
-public enum GoSnippets {
+/// Built-in C/C++ snippets, offered in completion by trigger word.
+public enum CppSnippets {
     public static let all: [(trigger: String, detail: String, body: String)] = [
-        ("iferr", "if err != nil { return … }", "if err != nil {\n\treturn ${1:err}\n}$0"),
-        ("errorf", "fmt.Errorf(\"…: %w\", err)", "fmt.Errorf(\"${1:context}: %w\", ${2:err})$0"),
-        ("fori", "for i := 0; i < n; i++ { … }", "for i := 0; i < ${1:n}; i++ {\n\t$0\n}"),
-        ("forr", "for k, v := range … { … }", "for ${1:_}, ${2:v} := range ${3:items} {\n\t$0\n}"),
-        ("func", "func name(…) … { … }", "func ${1:name}(${2}) ${3}{\n\t$0\n}"),
-        ("meth", "func (r T) Name(…) … { … }", "func (${1:r} ${2:*Receiver}) ${3:Name}(${4}) ${5}{\n\t$0\n}"),
-        ("main", "func main() { … }", "func main() {\n\t$0\n}"),
-        ("test", "func TestName(t *testing.T) { … }", "func Test${1:Name}(t *testing.T) {\n\t$0\n}"),
-        ("tt", "table-driven test", "tests := []struct {\n\tname string\n\t${1:input} ${2:string}\n\twant ${3:string}\n}{\n\t{name: \"${4:case}\"},\n}\nfor _, tt := range tests {\n\tt.Run(tt.name, func(t *testing.T) {\n\t\t$0\n\t})\n}"),
-        ("sw", "switch … { case …: }", "switch ${1:x} {\ncase ${2:value}:\n\t$0\n}"),
-        ("sel", "select { case …: }", "select {\ncase ${1:v} := <-${2:ch}:\n\t$0\n}"),
-        ("gof", "go func() { … }()", "go func() {\n\t$0\n}()"),
-        ("deferf", "defer func() { … }()", "defer func() {\n\t$0\n}()"),
-        ("st", "type Name struct { … }", "type ${1:Name} struct {\n\t$0\n}"),
-        ("if", "interface { … }", "type ${1:Name} interface {\n\t$0\n}"),
+        ("main", "int main(int argc, char *argv[]) { … }", "int main(int argc, char *argv[]) {\n\t$0\n\treturn 0;\n}"),
+        ("fori", "for (int i = 0; i < n; ++i) { … }", "for (${1:int} ${2:i} = 0; $2 < ${3:n}; ++$2) {\n\t$0\n}"),
+        ("forr", "for (auto &x : range) { … }", "for (${1:const auto} &${2:item} : ${3:items}) {\n\t$0\n}"),
+        ("while", "while (…) { … }", "while (${1:condition}) {\n\t$0\n}"),
+        ("dowhile", "do { … } while (…);", "do {\n\t$0\n} while (${1:condition});"),
+        ("ifel", "if (…) { … } else { … }", "if (${1:condition}) {\n\t$2\n} else {\n\t$0\n}"),
+        ("sw", "switch (…) { case …: }", "switch (${1:value}) {\ncase ${2:0}:\n\t$0\n\tbreak;\ndefault:\n\tbreak;\n}"),
+        ("class", "class Name { … };", "class ${1:Name} {\npublic:\n\t$1();\n\t~$1();\n\nprivate:\n\t$0\n};"),
+        ("struct", "struct Name { … };", "struct ${1:Name} {\n\t$0\n};"),
+        ("enumc", "enum class Name { … };", "enum class ${1:Name} {\n\t$0\n};"),
+        ("ns", "namespace name { … }", "namespace ${1:name} {\n\n$0\n\n} // namespace $1"),
+        ("tmpl", "template <typename T>", "template <typename ${1:T}>\n$0"),
+        ("try", "try { … } catch (…) { … }", "try {\n\t$1\n} catch (const ${2:std::exception} &${3:e}) {\n\t$0\n}"),
+        ("lambda", "[&](…) { … }", "[${1:&}](${2}) {\n\t$0\n}"),
+        ("inc", "#include <…>", "#include <${1:vector}>$0"),
+        ("incq", "#include \"…\"", "#include \"${1:header.h}\"$0"),
+        ("once", "#pragma once", "#pragma once\n$0"),
+        ("guard", "#ifndef … #define … #endif", "#ifndef ${1:HEADER_H}\n#define $1\n\n$0\n\n#endif // $1"),
+        ("ifdef", "#ifdef … #endif", "#ifdef ${1:MACRO}\n$0\n#endif"),
+        ("cout", "std::cout << … << '\\n';", "std::cout << ${1:value} << '\\n';$0"),
+        ("cerr", "std::cerr << … << '\\n';", "std::cerr << ${1:value} << '\\n';$0"),
+        ("printf", "printf(\"…\\n\", …);", "printf(\"${1:%d}\\n\", ${2:value});$0"),
+        ("uptr", "std::make_unique<T>(…)", "std::make_unique<${1:T}>(${2})$0"),
+        ("sptr", "std::make_shared<T>(…)", "std::make_shared<${1:T}>(${2})$0"),
+        ("test", "TEST(Suite, Name) { … }", "TEST(${1:Suite}, ${2:Name}) {\n\t$0\n}"),
+        ("testf", "TEST_F(Fixture, Name) { … }", "TEST_F(${1:Fixture}, ${2:Name}) {\n\t$0\n}"),
+        ("tcase", "TEST_CASE(\"…\") { … }", "TEST_CASE(\"${1:name}\") {\n\t$0\n}"),
     ]
 
     /// Completion items for snippets whose trigger matches `prefix` (fuzzy, needs ≥ 2 chars).

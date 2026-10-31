@@ -20,7 +20,7 @@ public extension TextEdit {
 /// An LSP `WorkspaceEdit`, flattened to text edits per document URI.
 public struct WorkspaceEdit: Sendable, Hashable {
     public var changes: [String: [TextEdit]]
-    /// Files to create (empty) before applying `changes`, e.g. a new _test.go.
+    /// Files to create (empty) before applying `changes`, e.g. a new header.
     public var creates: [String]
 
     public init(changes: [String: [TextEdit]], creates: [String] = []) {

@@ -1,19 +1,20 @@
 import Foundation
 
-/// How to run/debug a main package: which one, with what arguments and environment.
+/// How to run/debug a program: which target, with what arguments and environment.
 public struct RunConfiguration: Codable, Sendable, Hashable, Identifiable {
     public var id = UUID()
     public var name: String
-    /// Package directory relative to the project root ("." for the root).
-    public var package: String
+    /// What to run: a CMake executable target name, a source file with `main` (relative to the
+    /// project root, compiled on its own), or a path to a program the build produces.
+    public var target: String
     /// Program arguments, shell-style (quotes group words).
     public var arguments: String
     /// Extra environment, one `KEY=value` per line.
     public var environment: String
 
-    public init(name: String, package: String, arguments: String = "", environment: String = "") {
+    public init(name: String, target: String, arguments: String = "", environment: String = "") {
         self.name = name
-        self.package = package
+        self.target = target
         self.arguments = arguments
         self.environment = environment
     }
@@ -29,9 +30,6 @@ public struct RunConfiguration: Codable, Sendable, Hashable, Identifiable {
         }
         return result
     }
-
-    /// `go run` / `dlv` package pattern: "./cmd/server" or ".".
-    public var packagePattern: String { package == "." || package.isEmpty ? "." : "./" + package }
 }
 
 public enum ShellWords {
@@ -66,19 +64,3 @@ public enum ShellWords {
     }
 }
 
-public enum GoPackages {
-    /// Directories (relative to `root`, "." for the root) whose non-test files declare `package main`.
-    public static func mainPackages(under root: URL) -> [String] {
-        let rootPath = root.canonicalFileURL.path
-        var found = Set<String>()
-        for path in ProjectSearch.files(under: root) where path.hasSuffix(".go") && !path.hasSuffix("_test.go") {
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-                  text.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces) == "package main" })
-            else { continue }
-            let dir = (path as NSString).deletingLastPathComponent
-            let relative = dir == rootPath ? "." : String(dir.dropFirst(rootPath.count + 1))
-            found.insert(relative)
-        }
-        return found.sorted { $0 == "." || ($1 != "." && $0.localizedStandardCompare($1) == .orderedAscending) }
-    }
-}

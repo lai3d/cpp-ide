@@ -212,8 +212,8 @@ public struct Location: Sendable, Hashable {
 
 // MARK: - Identifiers
 
-public enum GoIdentifier {
-    /// UTF-16 unit that can be part of a Go identifier (non-ASCII treated as letters).
+public enum Identifier {
+    /// UTF-16 unit that can be part of a C/C++ identifier (non-ASCII treated as letters).
     public static func isIdentifier(_ unit: unichar) -> Bool {
         (unit >= 0x30 && unit <= 0x39) || (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A)
             || unit == 0x5F || unit >= 0x80
@@ -338,9 +338,6 @@ public struct InlayHint: Sendable, Hashable {
                              paddingRight: value["paddingRight"]?.boolValue ?? false)
         }
     }
-
-    /// gopls settings that turn the hints on (sent as initializationOptions).
-    public static var goplsSettings: JSONValue { GoplsSettings.default }
 }
 
 // MARK: - Folding

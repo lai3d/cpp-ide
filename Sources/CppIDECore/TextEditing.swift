@@ -153,7 +153,7 @@ public enum TextEditing {
             // Not right after a word character (e.g. the closing quote of "abc").
             if offset > 0 {
                 let previous = text.character(at: offset - 1)
-                if GoIdentifier.isIdentifier(previous) || previous == unichar(opening.unicodeScalars.first!.value) { return false }
+                if Identifier.isIdentifier(previous) || previous == unichar(opening.unicodeScalars.first!.value) { return false }
             }
         }
         return true

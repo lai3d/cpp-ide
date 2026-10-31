@@ -20,7 +20,7 @@ enum EditorTheme {
         let style = NSMutableParagraphStyle()
         let spaceWidth = (" " as NSString).size(withAttributes: [.font: font(settings)]).width
         style.tabStops = []
-        style.defaultTabInterval = spaceWidth * CGFloat(settings.tabWidth)  // gofmt uses tabs
+        style.defaultTabInterval = spaceWidth * CGFloat(settings.tabWidth)
         return style
     }
 
@@ -28,22 +28,23 @@ enum EditorTheme {
         [.font: font(settings), .foregroundColor: NSColor.textColor, .paragraphStyle: paragraphStyle(settings)]
     }
 
-    /// Colors for what only gopls knows (the regex lexer handles keywords, strings, …).
+    /// Colors for what only clangd knows (the regex lexer handles keywords, strings, …).
     static func color(forSemantic type: String, modifiers: Set<String>) -> NSColor? {
         switch type {
-        case "namespace": .secondaryLabelColor  // package qualifiers: fmt.Println
-        case "type", "typeParameter", "struct", "interface", "class", "enum": .systemTeal
+        case "namespace": .secondaryLabelColor  // std::vector
+        case "type", "typeParameter", "struct", "interface", "class", "enum", "concept": .systemTeal
+        case "macro": .systemBrown
         case "parameter": .systemBrown
-        case "function" where modifiers.contains("defaultLibrary"): .systemPurple  // len, append, …
         case "function", "method": .systemBlue
-        case "variable" where modifiers.contains("defaultLibrary"): .systemPurple  // nil, true, false
+        case "property" where !modifiers.contains("static"): .systemCyan  // data members
         case "variable" where modifiers.contains("readonly"), "enumMember": .systemIndigo  // constants
+        case "comment": .tertiaryLabelColor  // inactive #if regions
         default: nil
         }
     }
 
     // System colors adapt to light and dark mode automatically.
-    static func color(for kind: GoTokenKind) -> NSColor {
+    static func color(for kind: TokenKind) -> NSColor {
         switch kind {
         case .keyword: .systemPink
         case .type: .systemTeal
@@ -52,6 +53,7 @@ enum EditorTheme {
         case .string: .systemOrange
         case .number: .systemIndigo
         case .comment: .systemGreen
+        case .preprocessor: .systemBrown
         }
     }
 }

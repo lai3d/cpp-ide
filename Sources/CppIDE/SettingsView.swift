@@ -8,7 +8,7 @@ struct SettingsView: View {
             EditorSettingsTab()
                 .tabItem { Label("Editor", systemImage: "character.cursor.ibeam") }
             ToolsSettingsTab()
-                .tabItem { Label("Go Tools", systemImage: "wrench.and.screwdriver") }
+                .tabItem { Label("Toolchain", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 520)
         .padding(20)
@@ -18,7 +18,7 @@ struct SettingsView: View {
 private struct EditorSettingsTab: View {
     @AppStorage(EditorSettings.fontSizeKey) private var fontSize = 13.0
     @AppStorage(EditorSettings.tabWidthKey) private var tabWidth = 4
-    @AppStorage("formatOnSave") private var formatOnSave = true
+    @AppStorage("formatOnSave") private var formatOnSave = false
     @AppStorage("inlayHints") private var inlayHints = true
     @AppStorage("inlineBlame") private var inlineBlame = true
     @AppStorage(SessionStore.reopenLastKey) private var reopenLast = true
@@ -36,7 +36,7 @@ private struct EditorSettingsTab: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 280)
-            Toggle("Format and organize imports on save", isOn: $formatOnSave)
+            Toggle("Format with clang-format on save", isOn: $formatOnSave)
             Toggle("Show inlay hints (parameter names, inferred types)", isOn: $inlayHints)
             Toggle("Show Git blame for the current line", isOn: $inlineBlame)
             Toggle("Reopen the last project at launch", isOn: $reopenLast)
@@ -57,14 +57,16 @@ private struct ToolsSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                ToolPathRow(name: "go", hint: "https://go.dev/dl/")
-                ToolPathRow(name: "gopls", hint: "go install golang.org/x/tools/gopls@latest")
-                ToolPathRow(name: "dlv", hint: "go install github.com/go-delve/delve/cmd/dlv@latest")
+                ToolPathRow(name: "clangd", hint: "xcode-select --install, or brew install llvm")
+                ToolPathRow(name: "lldb-dap", hint: "ships with Xcode (xcrun -f lldb-dap) or brew install llvm")
+                ToolPathRow(name: "cmake", hint: "brew install cmake")
+                ToolPathRow(name: "ninja", hint: "optional: brew install ninja (faster CMake builds)")
+                ToolPathRow(name: "clang++", hint: "xcode-select --install")
             } footer: {
-                Text("Leave empty to search PATH, $GOBIN, $GOPATH/bin, ~/go/bin and Homebrew.")
+                Text("Leave empty to search PATH, Homebrew (including keg-only LLVM) and xcrun.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Button("Restart gopls") { Task { await workspace.restartLanguageServer() } }
+            Button("Restart clangd") { Task { await workspace.restartLanguageServer() } }
                 .disabled(workspace.rootURL == nil)
         }
     }

@@ -89,7 +89,7 @@ public extension FuzzyMatch {
         return score * 10 - candidate.count
     }
 
-    /// Scores a file path: the file name counts double, so `gre` finds `greet.go` before `progress/x.go`.
+    /// Scores a file path: the file name counts double, so `gre` finds `greeter.cpp` before `progress/x.cpp`.
     static func scorePath(_ pattern: String, _ relativePath: String) -> Int? {
         let name = (relativePath as NSString).lastPathComponent
         let nameScore = score(pattern, name).map { $0 * 2 }

@@ -3,6 +3,13 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    override init() {
+        // `CppIDE <folder>` must not be treated as a document to open: with the macOS 26 SDK and no
+        // saved window state, AppKit would otherwise swallow the argument and open no window at all.
+        UserDefaults.standard.register(defaults: ["NSTreatUnknownArgumentsAsOpen": "NO"])
+        super.init()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Ask per window, so each prompt names that project's files.
         for workspace in Workspace.allOpen where !workspace.dirtyDocuments.isEmpty {
@@ -28,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Workspace.allOpen.forEach { $0.stopDebugging() }  // ends dlv and the debuggees
+        Workspace.allOpen.forEach { $0.stopDebugging() }  // ends lldb-dap and the debuggees
     }
 }
 
@@ -44,7 +51,7 @@ extension FocusedValues {
     }
 }
 
-/// One window = one project (its own documents, gopls, debugger).
+/// One window = one project (its own documents, clangd, debugger).
 struct WorkspaceWindow: View {
     @State private var workspace = Workspace()
 
@@ -77,7 +84,7 @@ struct CppIDEApp: App {
 struct CppIDECommands: Commands {
     @FocusedValue(\.workspace) private var focused: Workspace?
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("formatOnSave") private var formatOnSave = true
+    @AppStorage("formatOnSave") private var formatOnSave = false
 
     /// Without a focused window, commands target an empty workspace (and are disabled or no-ops).
     private var workspace: Workspace { focused ?? Workspace.placeholder }
@@ -154,47 +161,50 @@ struct CppIDECommands: Commands {
                     Task { await workspace.jumpToDefinition(from: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("j", modifiers: [.control, .command])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
                 Button("Jump to Implementation") {
                     guard let document = workspace.activeDocument else { return }
                     Task { await workspace.jumpToImplementation(from: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("j", modifiers: [.option, .command])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
                 Button("Jump to Type Definition") {
                     guard let document = workspace.activeDocument else { return }
                     Task { await workspace.jumpToTypeDefinition(from: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("j", modifiers: [.control, .option, .command])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
                 Button("Find References") {
                     guard let document = workspace.activeDocument else { return }
                     Task { await workspace.findReferences(in: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
                 Button("Call Hierarchy") {
                     guard let document = workspace.activeDocument else { return }
                     Task { await workspace.showCallHierarchy(in: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("h", modifiers: [.control, .option])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
+                Button("Switch Header/Source") { Task { await workspace.switchSourceHeader() } }
+                    .keyboardShortcut(.upArrow, modifiers: [.control, .command])
+                    .disabled(!workspace.isSourceFile)
                 Button("Go Back") { workspace.goBack() }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
                     .disabled(!workspace.canGoBack)
                 Divider()
                 Button("Fold") { workspace.requestFold(.fold) }
                     .keyboardShortcut(.leftArrow, modifiers: [.option, .command])
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Button("Unfold") { workspace.requestFold(.unfold) }
                     .keyboardShortcut(.rightArrow, modifiers: [.option, .command])
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Button("Fold All") { workspace.requestFold(.foldAll) }
                     .keyboardShortcut(.leftArrow, modifiers: [.shift, .option, .command])
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Button("Unfold All") { workspace.requestFold(.unfoldAll) }
                     .keyboardShortcut(.rightArrow, modifiers: [.shift, .option, .command])
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Divider()
                 Button("Next Tab") { workspace.selectAdjacentTab(1) }
                     .keyboardShortcut("]", modifiers: [.command, .shift])
@@ -207,10 +217,10 @@ struct CppIDECommands: Commands {
                     Task { await workspace.promptRename(in: document, at: document.caretOffset) }
                 }
                 .keyboardShortcut("e", modifiers: [.control, .command])
-                .disabled(!workspace.isGoFile)
+                .disabled(!workspace.isSourceFile)
                 Button("Quick Fix…") { workspace.requestQuickFix() }
                     .keyboardShortcut(.return, modifiers: .option)
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
             }
             CommandMenu("Debug") {
                 Button("Start Debugging") { workspace.startDebugging() }
@@ -236,7 +246,7 @@ struct CppIDECommands: Commands {
                 Divider()
                 Button("Toggle Breakpoint") { workspace.toggleBreakpointAtCaret() }
                     .keyboardShortcut("\\", modifiers: .command)
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Button("Remove All Breakpoints") { workspace.clearBreakpoints() }
                     .disabled(workspace.breakpoints.isEmpty)
             }
@@ -251,47 +261,35 @@ struct CppIDECommands: Commands {
                 .keyboardShortcut("d", modifiers: [.option, .command])
                 .disabled(workspace.activeDocument.map { workspace.gitBase(for: $0) == nil } ?? true)
             }
-            CommandMenu("Go") {
+            CommandMenu("Build") {
                 Button("Run") { workspace.runSelectedConfiguration() }
                     .keyboardShortcut("r")
                 Button("Edit Run Configurations…") { workspace.isEditingRunConfigurations = true }
                     .disabled(workspace.rootURL == nil)
-                Button("Build") { workspace.runGo(["build", "./..."]) }
+                Button("Build") { workspace.build() }
                     .keyboardShortcut("b")
-                Button("Test All") { workspace.runTests(.all) }
+                Button("Clean") { workspace.clean() }
+                    .keyboardShortcut("k", modifiers: [.shift, .command])
+                Button("Reconfigure CMake") { workspace.reconfigure() }
+                    .disabled(workspace.buildSystem != .cmake)
+                Divider()
+                Button("Test All (CTest)") { workspace.runTests(.all) }
                     .keyboardShortcut("u")
-                Button("Test Package") { workspace.runActivePackageTests() }
-                    .keyboardShortcut("u", modifiers: [.control, .command])
                 Button("Run Test at Cursor") { workspace.runTestAtCaret() }
                     .keyboardShortcut("u", modifiers: [.control, .option, .command])
-                Button("Test with Coverage") { workspace.runTestsWithCoverage() }
-                    .keyboardShortcut("u", modifiers: [.control, .shift, .command])
-                Button(workspace.showCoverage ? "Hide Coverage" : "Show Coverage") { workspace.showCoverage.toggle() }
-                    .disabled(workspace.coverage == nil)
                 Divider()
                 Button("Terminal") { workspace.showTerminal() }
                     .keyboardShortcut("`", modifiers: .control)
-                Divider()
-                Button("Vet (go vet ./...)") { workspace.runGo(["vet", "./..."]) }
-                    .keyboardShortcut("v", modifiers: [.control, .option, .command])
-                Button("Generate (go generate ./...)") { workspace.runGo(["generate", "./..."]) }
-                Menu("Modules") {
-                    Button("Tidy (go mod tidy)") { workspace.runGo(["mod", "tidy"]) }
-                    Button("Update Dependencies (go get -u ./...)") { workspace.runGo(["get", "-u", "./..."]) }
-                    Button("Download (go mod download)") { workspace.runGo(["mod", "download"]) }
-                    Button("Verify (go mod verify)") { workspace.runGo(["mod", "verify"]) }
-                }
-                .disabled(workspace.rootURL == nil)
                 Divider()
                 Button("Stop") { workspace.stopRun() }
                     .keyboardShortcut(".")
                 Divider()
                 Button("Format Document") { Task { await workspace.formatActiveDocument() } }
                     .keyboardShortcut("f", modifiers: [.option, .shift])
-                    .disabled(!workspace.isGoFile)
+                    .disabled(!workspace.isSourceFile)
                 Toggle("Format on Save", isOn: $formatOnSave)
                 Divider()
-                Button("Restart gopls") { Task { await workspace.restartLanguageServer() } }
+                Button("Restart clangd") { Task { await workspace.restartLanguageServer() } }
             }
             }
 }
