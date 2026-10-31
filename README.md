@@ -15,7 +15,7 @@ A native macOS IDE for C and C++, written in Swift (SwiftUI + AppKit).
 - Line-number gutter with error/warning markers, Git change bars and code folding (⌥⌘← / ⌥⌘→)
 - Occurrence highlights, current-line highlight, auto-indent, auto-closing brackets and quotes
 - Toggle comment (⌘/), move / duplicate lines, indent / outdent
-- Snippets: clangd call placeholders and built-ins (`fori`, `forr`, `class`, `ns`, `guard`, `once`, `test`, …) with Tab stops
+- Snippets: clangd call placeholders and built-ins with Tab stops, per language: C++ (`forr`, `class`, `ns`, `test`, …), C (`tstruct`, `malloc`, `utest`, `cmtest`, …) and both (`fori`, `guard`, `once`, …)
 - Breadcrumbs (folder › file › namespace › class › function) above the editor
 - clang-format via clangd: Format Document (⌥⇧F), optional format on save (honors `.clang-format`)
 
@@ -32,12 +32,13 @@ A native macOS IDE for C and C++, written in Swift (SwiftUI + AppKit).
 - Completion with header insertion, hover docs, signature help while typing calls
 - Jump to definition (⌘-click / ⌃⌘J), implementation (⌥⌘J), type definition (⌃⌥⌘J) and back (⌃⌘←); find references (⇧⌘R), call hierarchy (⌃⌥H)
 - Rename symbol across files (⌃⌘E), quick fixes and refactorings (⌥↩)
+- C projects (only `.c` sources): headers are C too, also without a `compile_commands.json` (clangd would otherwise read a lone `.h` as Objective-C++)
 
 **Build, run, test & debug**
 - **CMake**: configures `build/` on first build (Debug, Ninja when installed, `compile_commands.json` exported so clangd sees real flags), then `cmake --build`; Reconfigure and Clean in the Build menu
-- **Make**: runs `make -jN`; **no build system**: compiles the active file with clang/clang++ (`-g -O0 -Wall -Wextra`) into `build/`
+- **Make**: runs `make -jN`; **no build system**: compiles the active file with clang/clang++ (`-g -O0 -Wall -Wextra`) into `build/`, using the C / C++ standard from Settings ▸ Toolchain (C17 / C++20 by default) plus any flags in `compile_flags.txt`
 - Run configurations (CMake executable target or source file, arguments, environment) for Run (⌘R) and Debug (⌥⌘R); compiler output `file.cpp:12:5` references are clickable
-- Tests via CTest (⌘U all, ⌃⌥⌘U at cursor): Tests panel with per-test output; GoogleTest / Catch2 tests get gutter ▶ / ✓ / ✗
+- Tests via CTest (⌘U all, ⌃⌥⌘U at cursor): Tests panel with per-test output; GoogleTest / Catch2 / Unity / CMocka tests get gutter ▶ / ✓ / ✗ (a Unity or CMocka function runs the ctest tests built from its file, and each function's result is read from the test output)
 - Debugger (lldb-dap): click line numbers for breakpoints (with conditions), continue / step over (F6) / into (F7) / out (F8), call stack, expandable variables, watches, hover evaluation
 
 See [ROADMAP.md](ROADMAP.md) for what's next.

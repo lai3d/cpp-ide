@@ -102,42 +102,57 @@ public struct Snippet: Sendable, Hashable {
 
 /// Built-in C/C++ snippets, offered in completion by trigger word.
 public enum CppSnippets {
-    public static let all: [(trigger: String, detail: String, body: String)] = [
-        ("main", "int main(int argc, char *argv[]) { … }", "int main(int argc, char *argv[]) {\n\t$0\n\treturn 0;\n}"),
-        ("fori", "for (int i = 0; i < n; ++i) { … }", "for (${1:int} ${2:i} = 0; $2 < ${3:n}; ++$2) {\n\t$0\n}"),
-        ("forr", "for (auto &x : range) { … }", "for (${1:const auto} &${2:item} : ${3:items}) {\n\t$0\n}"),
-        ("while", "while (…) { … }", "while (${1:condition}) {\n\t$0\n}"),
-        ("dowhile", "do { … } while (…);", "do {\n\t$0\n} while (${1:condition});"),
-        ("ifel", "if (…) { … } else { … }", "if (${1:condition}) {\n\t$2\n} else {\n\t$0\n}"),
-        ("sw", "switch (…) { case …: }", "switch (${1:value}) {\ncase ${2:0}:\n\t$0\n\tbreak;\ndefault:\n\tbreak;\n}"),
-        ("class", "class Name { … };", "class ${1:Name} {\npublic:\n\t$1();\n\t~$1();\n\nprivate:\n\t$0\n};"),
-        ("struct", "struct Name { … };", "struct ${1:Name} {\n\t$0\n};"),
-        ("enumc", "enum class Name { … };", "enum class ${1:Name} {\n\t$0\n};"),
-        ("ns", "namespace name { … }", "namespace ${1:name} {\n\n$0\n\n} // namespace $1"),
-        ("tmpl", "template <typename T>", "template <typename ${1:T}>\n$0"),
-        ("try", "try { … } catch (…) { … }", "try {\n\t$1\n} catch (const ${2:std::exception} &${3:e}) {\n\t$0\n}"),
-        ("lambda", "[&](…) { … }", "[${1:&}](${2}) {\n\t$0\n}"),
-        ("inc", "#include <…>", "#include <${1:vector}>$0"),
-        ("incq", "#include \"…\"", "#include \"${1:header.h}\"$0"),
-        ("once", "#pragma once", "#pragma once\n$0"),
-        ("guard", "#ifndef … #define … #endif", "#ifndef ${1:HEADER_H}\n#define $1\n\n$0\n\n#endif // $1"),
-        ("ifdef", "#ifdef … #endif", "#ifdef ${1:MACRO}\n$0\n#endif"),
-        ("cout", "std::cout << … << '\\n';", "std::cout << ${1:value} << '\\n';$0"),
-        ("cerr", "std::cerr << … << '\\n';", "std::cerr << ${1:value} << '\\n';$0"),
-        ("printf", "printf(\"…\\n\", …);", "printf(\"${1:%d}\\n\", ${2:value});$0"),
-        ("uptr", "std::make_unique<T>(…)", "std::make_unique<${1:T}>(${2})$0"),
-        ("sptr", "std::make_shared<T>(…)", "std::make_shared<${1:T}>(${2})$0"),
-        ("test", "TEST(Suite, Name) { … }", "TEST(${1:Suite}, ${2:Name}) {\n\t$0\n}"),
-        ("testf", "TEST_F(Fixture, Name) { … }", "TEST_F(${1:Fixture}, ${2:Name}) {\n\t$0\n}"),
-        ("tcase", "TEST_CASE(\"…\") { … }", "TEST_CASE(\"${1:name}\") {\n\t$0\n}"),
+    /// Which files a snippet is offered in.
+    public enum Language: Sendable { case both, c, cxx }
+
+    public static let all: [(trigger: String, detail: String, body: String, language: Language)] = [
+        ("main", "int main(int argc, char *argv[]) { … }", "int main(int argc, char *argv[]) {\n\t$0\n\treturn 0;\n}", .both),
+        ("fori", "for (int i = 0; i < n; ++i) { … }", "for (${1:int} ${2:i} = 0; $2 < ${3:n}; ++$2) {\n\t$0\n}", .both),
+        ("forr", "for (auto &x : range) { … }", "for (${1:const auto} &${2:item} : ${3:items}) {\n\t$0\n}", .cxx),
+        ("while", "while (…) { … }", "while (${1:condition}) {\n\t$0\n}", .both),
+        ("dowhile", "do { … } while (…);", "do {\n\t$0\n} while (${1:condition});", .both),
+        ("ifel", "if (…) { … } else { … }", "if (${1:condition}) {\n\t$2\n} else {\n\t$0\n}", .both),
+        ("sw", "switch (…) { case …: }", "switch (${1:value}) {\ncase ${2:0}:\n\t$0\n\tbreak;\ndefault:\n\tbreak;\n}", .both),
+        ("class", "class Name { … };", "class ${1:Name} {\npublic:\n\t$1();\n\t~$1();\n\nprivate:\n\t$0\n};", .cxx),
+        ("struct", "struct Name { … };", "struct ${1:Name} {\n\t$0\n};", .both),
+        ("tstruct", "typedef struct { … } Name;", "typedef struct ${1:Name} {\n\t$0\n} $1;", .c),
+        ("enum", "enum Name { … };", "enum ${1:Name} {\n\t$0\n};", .c),
+        ("enumc", "enum class Name { … };", "enum class ${1:Name} {\n\t$0\n};", .cxx),
+        ("ns", "namespace name { … }", "namespace ${1:name} {\n\n$0\n\n} // namespace $1", .cxx),
+        ("tmpl", "template <typename T>", "template <typename ${1:T}>\n$0", .cxx),
+        ("try", "try { … } catch (…) { … }", "try {\n\t$1\n} catch (const ${2:std::exception} &${3:e}) {\n\t$0\n}", .cxx),
+        ("lambda", "[&](…) { … }", "[${1:&}](${2}) {\n\t$0\n}", .cxx),
+        ("inc", "#include <…>", "#include <${1:vector}>$0", .cxx),
+        ("inc", "#include <…>", "#include <${1:stdio.h}>$0", .c),
+        ("incq", "#include \"…\"", "#include \"${1:header.h}\"$0", .both),
+        ("once", "#pragma once", "#pragma once\n$0", .both),
+        ("guard", "#ifndef … #define … #endif", "#ifndef ${1:HEADER_H}\n#define $1\n\n$0\n\n#endif // $1", .both),
+        ("ifdef", "#ifdef … #endif", "#ifdef ${1:MACRO}\n$0\n#endif", .both),
+        ("cout", "std::cout << … << '\\n';", "std::cout << ${1:value} << '\\n';$0", .cxx),
+        ("cerr", "std::cerr << … << '\\n';", "std::cerr << ${1:value} << '\\n';$0", .cxx),
+        ("printf", "printf(\"…\\n\", …);", "printf(\"${1:%d}\\n\", ${2:value});$0", .both),
+        ("fprintf", "fprintf(stderr, \"…\\n\", …);", "fprintf(${1:stderr}, \"${2:%s}\\n\", ${3:value});$0", .c),
+        ("malloc", "T *p = malloc(n * sizeof *p);",
+         "${1:int} *${2:p} = malloc(${3:n} * sizeof *$2);\nif (!$2) {\n\t${4:return -1};\n}\n$0", .c),
+        ("uptr", "std::make_unique<T>(…)", "std::make_unique<${1:T}>(${2})$0", .cxx),
+        ("sptr", "std::make_shared<T>(…)", "std::make_shared<${1:T}>(${2})$0", .cxx),
+        ("test", "TEST(Suite, Name) { … }", "TEST(${1:Suite}, ${2:Name}) {\n\t$0\n}", .cxx),
+        ("testf", "TEST_F(Fixture, Name) { … }", "TEST_F(${1:Fixture}, ${2:Name}) {\n\t$0\n}", .cxx),
+        ("tcase", "TEST_CASE(\"…\") { … }", "TEST_CASE(\"${1:name}\") {\n\t$0\n}", .cxx),
+        ("utest", "Unity: void test_name(void) { … }",
+         "void test_${1:name}(void) {\n\tTEST_ASSERT_EQUAL_INT(${2:expected}, ${3:actual});$0\n}", .c),
+        ("cmtest", "CMocka: static void test_name(void **state) { … }",
+         "static void test_${1:name}(void **state) {\n\t(void)state;\n\tassert_int_equal(${2:expected}, ${3:actual});$0\n}", .c),
     ]
 
-    /// Completion items for snippets whose trigger matches `prefix` (fuzzy, needs ≥ 2 chars).
-    public static func completions(matching prefix: String) -> [CompletionItem] {
+    /// Completion items for snippets whose trigger matches `prefix` (fuzzy, needs ≥ 2 chars),
+    /// limited to C or C++ ones by `isC`.
+    public static func completions(matching prefix: String, isC: Bool = false) -> [CompletionItem] {
         guard prefix.count >= 2 else { return [] }
-        return all.filter { FuzzyMatch.matches(prefix, $0.trigger) }.map {
-            CompletionItem(label: $0.trigger, kind: .snippet, detail: $0.detail,
-                           insertText: Snippet.parse($0.body).text, sortText: "~" + $0.trigger, snippet: $0.body)
-        }
+        return all.filter { $0.language == .both || ($0.language == .c) == isC }
+            .filter { FuzzyMatch.matches(prefix, $0.trigger) }.map {
+                CompletionItem(label: $0.trigger, kind: .snippet, detail: $0.detail,
+                               insertText: Snippet.parse($0.body).text, sortText: "~" + $0.trigger, snippet: $0.body)
+            }
     }
 }

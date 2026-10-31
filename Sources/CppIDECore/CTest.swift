@@ -27,6 +27,11 @@ public struct TestReport: Sendable {
     private var index: [String: Int] = [:]
     /// The test whose --output-on-failure block we're inside.
     private var outputOwner: Int?
+    /// `ctest -V` output per test number ("3: …" lines), attached to the test when it fails.
+    private var verboseOutput: [Int: String] = [:]
+    /// Results of individual test functions reported inside a ctest test's output: Unity
+    /// (`file.c:12:test_add:PASS`), CMocka and GoogleTest (`[       OK ] name`).
+    public private(set) var functionStatuses: [String: TestResult.Status] = [:]
 
     public init() {}
 
@@ -39,11 +44,35 @@ public struct TestReport: Sendable {
     private static let start = try! NSRegularExpression(pattern: #"^\s*Start\s+\d+:\s+(.+?)\s*$"#)
     // 3/4 Test  #3: Greeter.Hello ....................***Failed    0.01 sec
     private static let result = try! NSRegularExpression(
-        pattern: #"^\s*\d+/\d+\s+Test\s+#\d+:\s+(.+?)\s+\.+\s*(\*{0,3})\s*(Passed|Failed|Not Run|Skipped|Exception|Timeout|\S+)(.*?)\s+([\d.]+)\s+sec\s*$"#)
+        pattern: #"^\s*\d+/\d+\s+Test\s+#(\d+):\s+(.+?)\s+\.+\s*(\*{0,3})\s*(Passed|Failed|Not Run|Skipped|Exception|Timeout|\S+)(.*?)\s+([\d.]+)\s+sec\s*$"#)
+    // 3: tests/test_math.c:12:test_add:PASS   (ctest -V prefixes a test's output with its number)
+    private static let numbered = try! NSRegularExpression(pattern: #"^(\d+): ?(.*)$"#)
+    // Unity: tests/test_math.c:12:test_add:FAIL: Expected 3 Was 4
+    private static let unity = try! NSRegularExpression(pattern: #"^\S.*?:\d+:([A-Za-z_]\w*):(PASS|FAIL|IGNORE)\b"#)
+    // CMocka / GoogleTest: [       OK ] test_add   [  FAILED  ] Suite.Name (0 ms)
+    private static let bracketed = try! NSRegularExpression(
+        pattern: #"^\[\s*(RUN|OK|FAILED|SKIPPED|ERROR)\s*\]\s+([A-Za-z_][\w.]*)(?:\s+\(.*\))?\s*$"#)
+    /// ctest -V chatter that isn't test output.
+    private static let verboseNoise = ["UpdateCTestConfiguration", "Constructing a list of tests", "Done constructing a list",
+                                       "Updating test list for fixtures", "Checking test dependency graph",
+                                       "Test command:", "Working Directory:", "Test timeout computed", "Environment variables:"]
 
     public mutating func consume(line: String) {
         let ns = line as NSString
         let range = NSRange(location: 0, length: ns.length)
+        if let match = Self.numbered.firstMatch(in: line, range: range),
+           let number = Int(ns.substring(with: match.range(at: 1))) {
+            let text = ns.substring(with: match.range(at: 2))
+            guard !Self.verboseNoise.contains(where: text.hasPrefix) else { return }
+            recordFunctionResult(text)
+            verboseOutput[number, default: ""] += text + "\n"
+            return
+        }
+        if Self.verboseNoise.contains(where: line.hasPrefix)
+            || line.range(of: #"^(test \d+|Added \d+ tests? to meet fixture requirements|\s+\d+ - .+ \(.+\))$"#,
+                          options: .regularExpression) != nil {
+            return
+        }
         if let match = Self.start.firstMatch(in: line, range: range) {
             let i = slot(for: ns.substring(with: match.range(at: 1)))
             tests[i].status = .running
@@ -51,11 +80,12 @@ public struct TestReport: Sendable {
             return
         }
         if let match = Self.result.firstMatch(in: line, range: range) {
-            let name = ns.substring(with: match.range(at: 1))
-            let word = ns.substring(with: match.range(at: 3))
-            let rest = ns.substring(with: match.range(at: 4)).trimmingCharacters(in: .whitespaces)
+            let number = Int(ns.substring(with: match.range(at: 1))) ?? -1
+            let name = ns.substring(with: match.range(at: 2))
+            let word = ns.substring(with: match.range(at: 4))
+            let rest = ns.substring(with: match.range(at: 5)).trimmingCharacters(in: .whitespaces)
             let i = slot(for: name)
-            tests[i].elapsed = Double(ns.substring(with: match.range(at: 5)))
+            tests[i].elapsed = Double(ns.substring(with: match.range(at: 6)))
             switch word {
             case "Passed": tests[i].status = .passed
             case "Skipped": tests[i].status = .skipped
@@ -67,6 +97,9 @@ public struct TestReport: Sendable {
                 tests[i].detail = detail == "Failed" ? nil : detail
             }
             outputOwner = tests[i].status == .failed ? i : nil
+            if let verbose = verboseOutput.removeValue(forKey: number), tests[i].status == .failed {
+                tests[i].output += verbose
+            }
             updateSummary()
             return
         }
@@ -76,9 +109,29 @@ public struct TestReport: Sendable {
             return
         }
         if let owner = outputOwner {
+            recordFunctionResult(line)
             tests[owner].output += line + "\n"
         } else if !line.isEmpty, !line.hasPrefix("Test project ") {
             buildOutput += line + "\n"
+        }
+    }
+
+    private mutating func recordFunctionResult(_ text: String) {
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let name: String, word: String
+        if let match = Self.unity.firstMatch(in: text, range: range) {
+            (name, word) = (ns.substring(with: match.range(at: 1)), ns.substring(with: match.range(at: 2)))
+        } else if let match = Self.bracketed.firstMatch(in: text, range: range) {
+            (name, word) = (ns.substring(with: match.range(at: 2)), ns.substring(with: match.range(at: 1)))
+        } else {
+            return
+        }
+        switch word {
+        case "RUN": functionStatuses[name] = .running
+        case "PASS", "OK": functionStatuses[name] = .passed
+        case "IGNORE", "SKIPPED": functionStatuses[name] = .skipped
+        default: functionStatuses[name] = .failed
         }
     }
 
@@ -98,8 +151,41 @@ public struct TestReport: Sendable {
     }
 }
 
-/// Finds GoogleTest / Catch2 / doctest test declarations in source text.
+/// Finds GoogleTest / Catch2 / doctest / Unity / CMocka test declarations in source text.
 public enum TestFinder {
+    /// C test frameworks whose tests are functions inside one ctest test (not discovered per test).
+    public enum CFramework: Sendable { case unity, cmocka }
+
+    public static func cFramework(in text: String) -> CFramework? {
+        if text.range(of: #"#\s*include\s*[<"]unity\.h[>"]"#, options: .regularExpression) != nil { return .unity }
+        if text.range(of: #"#\s*include\s*[<"]cmocka\.h[>"]"#, options: .regularExpression) != nil { return .cmocka }
+        return nil
+    }
+
+    // Unity: void test_add(void) {     RUN_TEST(test_add);
+    private static let unityFunction = try! NSRegularExpression(
+        pattern: #"^[ \t]*(?:static\s+)?void\s+([A-Za-z_]\w*)\s*\(\s*void\s*\)\s*(?:\{|$)"#, options: .anchorsMatchLines)
+    private static let unityRun = try! NSRegularExpression(pattern: #"\bRUN_TEST\s*\(\s*([A-Za-z_]\w*)"#)
+    // CMocka: static void test_add(void **state) {     cmocka_unit_test(test_add),
+    private static let cmockaFunction = try! NSRegularExpression(
+        pattern: #"^[ \t]*(?:static\s+)?void\s+([A-Za-z_]\w*)\s*\(\s*void\s*\*\s*\*\s*\w*\s*\)\s*(?:\{|$)"#,
+        options: .anchorsMatchLines)
+    private static let cmockaRun = try! NSRegularExpression(pattern: #"\bcmocka_unit_test\w*\s*\(\s*([A-Za-z_]\w*)"#)
+
+    /// Unity / CMocka test functions: those registered with RUN_TEST / cmocka_unit_test when the file
+    /// does so, otherwise the ones named `test…`.
+    private static func cTestFunctions(in text: String, framework: CFramework) -> [(name: String, offset: Int)] {
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let (definition, registration) = framework == .unity ? (unityFunction, unityRun) : (cmockaFunction, cmockaRun)
+        let registered = Set(registration.matches(in: text, range: range).map { ns.substring(with: $0.range(at: 1)) })
+        return definition.matches(in: text, range: range).compactMap { match in
+            let name = ns.substring(with: match.range(at: 1))
+            let isTest = registered.isEmpty ? name.lowercased().hasPrefix("test") : registered.contains(name)
+            return isTest ? (name, match.range.location) : nil
+        }
+    }
+
     // TEST(Suite, Name)  TEST_F(Fixture, Name)  TYPED_TEST(Suite, Name)
     private static let gtest = try! NSRegularExpression(
         pattern: #"^[ \t]*(?:TEST|TEST_F|TYPED_TEST|FRIEND_TEST)\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)"#, options: .anchorsMatchLines)
@@ -109,7 +195,8 @@ public enum TestFinder {
         options: .anchorsMatchLines)
 
     /// Tests with their zero-based declaration lines, named the way ctest's discovery names them
-    /// (`Suite.Name` for GoogleTest, the TEST_CASE string for Catch2/doctest).
+    /// (`Suite.Name` for GoogleTest, the TEST_CASE string for Catch2/doctest), or by function
+    /// name for Unity / CMocka.
     public static func testFunctions(in text: String) -> [(name: String, line: Int)] {
         let ns = text as NSString
         let index = LineIndex(text)
@@ -122,6 +209,11 @@ public enum TestFinder {
         for match in catchCase.matches(in: text, range: range) {
             let name = ns.substring(with: match.range(at: 1))
             found.append((name, index.position(of: match.range.location).line, match.range.location))
+        }
+        if let framework = cFramework(in: text) {
+            for test in cTestFunctions(in: text, framework: framework) {
+                found.append((test.name, index.position(of: test.offset).line, test.offset))
+            }
         }
         return found.sorted { $0.offset < $1.offset }.map { ($0.name, $0.line) }
     }
@@ -152,6 +244,11 @@ public enum TestFinder {
     }
 
     /// An anchored ctest `-R` regex matching exactly `name`.
+    /// Quick pre-filter before parsing a file for tests.
+    public static func mightContainTests(_ text: String) -> Bool {
+        text.contains("TEST") || text.contains("SCENARIO") || text.contains("unity.h") || text.contains("cmocka.h")
+    }
+
     public static func ctestFilter(_ name: String) -> String {
         "^" + NSRegularExpression.escapedPattern(for: name) + "$"
     }

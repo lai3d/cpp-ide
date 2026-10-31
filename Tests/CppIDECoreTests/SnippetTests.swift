@@ -41,6 +41,10 @@ import Testing
         #expect(CppSnippets.completions(matching: "fo").map(\.label).contains("forr"))
         #expect(CppSnippets.completions(matching: "x").isEmpty)
         #expect(CppSnippets.all.allSatisfy { !Snippet.parse($0.body).stops.isEmpty })
-        #expect(Set(CppSnippets.all.map(\.trigger)).count == CppSnippets.all.count)  // unique triggers
+        // Unique triggers within each language (`inc` has a C and a C++ variant).
+        for isC in [true, false] {
+            let offered = CppSnippets.all.filter { $0.language == .both || ($0.language == .c) == isC }
+            #expect(Set(offered.map(\.trigger)).count == offered.count)
+        }
     }
 }

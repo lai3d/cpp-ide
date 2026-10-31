@@ -24,6 +24,7 @@ The editor, LSP/DAP plumbing, Git, terminal, search, multi-window and session fe
 
 | # | Item | Notes | Est. |
 |---|---|---|---|
+| 1.0 | ✅ C as a first-class language | C-only projects treat headers as C (clangd `fallbackFlags` `-xc`), C-only / C++-only snippets, C / C++ standard setting for single-file builds and clangd, `compile_flags.txt` flags in single-file builds, Unity / CMocka gutter markers with per-function results from `ctest -V` (2026-11-01) | 0.5h |
 | 1.1 | ⬜ Build configurations | Debug / Release / RelWithDebInfo switcher (separate `build-<config>` dirs); `CMakePresets.json` support | 0.8h |
 | 1.2 | ⬜ Problems from the build | Parse compiler `file:line:col: error:` lines into the Problems panel (not only clangd's) and color errors in Output | 0.4h |
 | 1.3 | ⬜ Coverage | `-fprofile-instr-generate -fcoverage-mapping` + `llvm-cov export` → existing coverage tint | 1h |

@@ -51,6 +51,8 @@ enum TestScope: Equatable {
     case all
     case package(URL)
     case test(String, in: URL)
+    /// Several ctest tests by name (e.g. those built from one Unity / CMocka file), titled `title`.
+    case tests([String], title: String)
 }
 
 enum SidebarMode: Hashable {
@@ -224,7 +226,8 @@ final class Workspace {
     var selectedTestID: String?
     /// Latest status per test name, for gutter markers.
     var testStatuses: [String: TestResult.Status] {
-        Dictionary(testReport.tests.compactMap { t in t.name.map { ($0, t.status) } }, uniquingKeysWith: { $1 })
+        testReport.functionStatuses.merging(
+            testReport.tests.compactMap { t in t.name.map { ($0, t.status) } }, uniquingKeysWith: { $1 })
     }
 
     // Debugging
@@ -386,6 +389,9 @@ final class Workspace {
 
     var project: CppProject? { rootURL.map { CppProject(root: $0) } }
 
+    /// C-only, C++-only or mixed: decides whether headers are C and which snippets show.
+    private(set) var sourceDialect: SourceDialect = .mixed
+
     /// Saved configurations for this folder, or one per runnable target found.
     func loadRunConfigurations() {
         guard let rootURL else { return }
@@ -405,6 +411,7 @@ final class Workspace {
 
     func refreshRunTargets() {
         guard let project else { return }
+        sourceDialect = SourceDialect.detect(root: project.root)
         buildSystem = project.buildSystem
         runTargets = project.runnableTargets()
     }
@@ -895,7 +902,7 @@ final class Workspace {
         let start = Identifier.prefixStart(in: ns, before: offset)
         let prefix = ns.substring(with: NSRange(location: start, length: offset - start))
         let afterDot = start > 0 && ns.character(at: start - 1) == 0x2E
-        let snippets = document.isSource && !afterDot ? CppSnippets.completions(matching: prefix) : []
+        let snippets = document.isSource && !afterDot ? CppSnippets.completions(matching: prefix, isC: sourceDialect.isC(document.url)) : []
         guard case let (lsp, params)? = positionRequest(document, at: offset),
               let result = try? await lsp.request("textDocument/completion", params: params)
         else { return snippets }
@@ -1474,6 +1481,7 @@ final class Workspace {
     }
 
     private func startLanguageServer(root: URL) async {
+        sourceDialect = SourceDialect.detect(root: root)
         guard let clangd = ToolLocator.find("clangd") else {
             lspStatus = "clangd not found — xcode-select --install, or brew install llvm"
             return
@@ -1499,7 +1507,7 @@ final class Workspace {
                              environment: ToolLocator.environment(), currentDirectory: root)
             lsp = client
             lspStatus = "clangd: starting…"
-            let initialized = try await client.request("initialize", params: Self.initializeParams(root: root))
+            let initialized = try await client.request("initialize", params: Self.initializeParams(root: root, dialect: sourceDialect))
             guard lsp === client else { return }  // folder changed while initializing
             semanticLegend = SemanticTokenLegend(initializeResult: initialized)
             try client.notify("initialized", params: [:])
@@ -1547,7 +1555,7 @@ final class Workspace {
         try? lsp?.notify("textDocument/didOpen", params: [
             "textDocument": [
                 "uri": .string(document.url.absoluteString),
-                "languageId": .string(SourceKind.languageID(for: document.url)),
+                "languageId": .string(SourceKind.languageID(for: document.url, dialect: sourceDialect)),
                 "version": .int(document.version),
                 "text": .string(document.text),
             ],
@@ -1569,7 +1577,7 @@ final class Workspace {
         ])
     }
 
-    private static func initializeParams(root: URL) -> JSONValue {
+    private static func initializeParams(root: URL, dialect: SourceDialect) -> JSONValue {
         let textDocument: JSONValue = [
             "synchronization": ["didSave": true, "dynamicRegistration": false],
             "publishDiagnostics": ["relatedInformation": false],
@@ -1621,7 +1629,7 @@ final class Workspace {
             "processId": .int(Int(ProcessInfo.processInfo.processIdentifier)),
             "clientInfo": ["name": "CppIDE", "version": "0.1.0"],
             "rootUri": .string(root.absoluteString),
-            "initializationOptions": ClangdSettings.default,
+            "initializationOptions": ClangdSettings.initializationOptions(dialect: dialect, standards: .current),
             "workspaceFolders": [["uri": .string(root.absoluteString), "name": .string(root.lastPathComponent)]],
             "capabilities": [
                 "textDocument": textDocument,
@@ -1657,15 +1665,19 @@ final class Workspace {
             bottomTab = .output
             return
         }
-        var arguments = ["--test-dir", "build", "--output-on-failure", "--progress", "--no-tests=error"]
+        // -V: every test's output, prefixed "N: ", so Unity / CMocka / GoogleTest per-function results
+        // show in the gutter even when the ctest test passes (failed tests still get their output).
+        var arguments = ["--test-dir", "build", "-V", "--no-tests=error"]
         switch scope {
         case .all, .package:
             testRunTitle = "All tests"
         case .test(let name, _):
             arguments += ["-R", TestFinder.ctestFilter(name)]
             testRunTitle = name
+        case .tests(let names, let title):
+            arguments += ["-R", CTestIndex.filter(names)]
+            testRunTitle = title
         }
-        arguments.removeAll { $0 == "--progress" }  // keeps one line per test in the stream
         testReport = TestReport()
         selectedTestID = nil
         let test = Command(executable: ctest, arguments: arguments, directory: project.root)
@@ -1677,12 +1689,26 @@ final class Workspace {
         appendOutput(line + "\n")
     }
 
-    /// Runs the test around the caret (GoogleTest / Catch2), else every test.
+    /// Runs the test around the caret (GoogleTest / Catch2 / Unity / CMocka), else every test.
     func runTestAtCaret() {
         guard let document = activeDocument,
               let name = TestFinder.enclosingTest(in: document.text, at: document.caretOffset)
         else { return runTests(.all) }
-        runTests(.test(name, in: document.url.deletingLastPathComponent()))
+        runTest(named: name, in: document)
+    }
+
+    /// Runs one test from `document`'s gutter or caret. GoogleTest / Catch2 tests are ctest tests of
+    /// their own; a Unity / CMocka function isn't, so run the ctest tests built from its file.
+    func runTest(named name: String, in document: Document) {
+        guard TestFinder.cFramework(in: document.text) != nil else {
+            return runTests(.test(name, in: document.url.deletingLastPathComponent()))
+        }
+        guard let project, let ctest = ToolLocator.find("ctest") else { return runTests(.all) }
+        let names = CTestIndex.tests(forSource: document.url, root: project.root,
+                                     buildDirectory: project.buildDirectory, ctest: ctest)
+        // Not configured yet (or no file API reply): every test, after the build configures.
+        guard !names.isEmpty else { return runTests(.all) }
+        runTests(.tests(names, title: "\(document.name) (\(name))"))
     }
 
     func runActivePackageTests() {
@@ -1696,7 +1722,7 @@ final class Workspace {
             let key = Self.key(for: URL(fileURLWithPath: path))
             let text = documents.first { Self.key(for: $0.url) == key }?.text
                 ?? (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            guard text.contains("TEST") || text.contains("SCENARIO") else { continue }
+            guard TestFinder.mightContainTests(text) else { continue }
             if let found = TestFinder.testFunctions(in: text).first(where: { $0.name == name }) {
                 navigate(to: URL(fileURLWithPath: path), position: TextPosition(line: found.line, character: 0))
                 return
@@ -1928,7 +1954,8 @@ final class Workspace {
                 return [.failure("Build", "clang not found: xcode-select --install")]
             }
             try? FileManager.default.createDirectory(at: project.buildDirectory, withIntermediateDirectories: true)
-            return [.fixed("Compile", project.compileSingleFileCommand(source: source, cCompiler: cc, cxxCompiler: cxx).command)]
+            return [.fixed("Compile", project.compileSingleFileCommand(source: source, cCompiler: cc, cxxCompiler: cxx,
+                                                                              standards: .current).command)]
         }
     }
 

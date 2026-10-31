@@ -11,6 +11,23 @@ public enum ClangdSettings {
     public static let `default`: JSONValue = [
         "clangdFileStatus": false,
     ]
+
+    /// initializationOptions for a project. `fallbackFlags` apply to files without a compile command
+    /// (no compile_commands.json / compile_flags.txt): clangd otherwise parses a lone `.h` as
+    /// Objective-C++, so in a C project `int new;` or `struct a *class;` would be flagged as errors.
+    public static func initializationOptions(dialect: SourceDialect, standards: LanguageStandards) -> JSONValue {
+        let fallback: [String]
+        switch dialect {
+        case .c: fallback = ["-xc", "-std=" + standards.c]
+        case .cxx: fallback = ["-std=" + standards.cxx]
+        case .mixed: fallback = []
+        }
+        guard !fallback.isEmpty else { return Self.default }
+        return [
+            "clangdFileStatus": false,
+            "fallbackFlags": .array(fallback.map { .string($0) }),
+        ]
+    }
 }
 
 /// One decoded semantic token (`textDocument/semanticTokens/full`).

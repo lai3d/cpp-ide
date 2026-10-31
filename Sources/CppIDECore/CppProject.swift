@@ -157,13 +157,20 @@ public struct CppProject: Sendable {
     }
 
     /// Compiles one source file (plus nothing else) into `build/<name>` with debug info.
-    public func compileSingleFileCommand(source: String, cCompiler: URL, cxxCompiler: URL) -> (command: Command, output: URL) {
+    /// Uses the C/C++ standard from `standards`, unless the project's `compile_flags.txt` (which clangd
+    /// also reads) sets one; its other flags (include dirs, defines, …) are passed along too.
+    public func compileSingleFileCommand(source: String, cCompiler: URL, cxxCompiler: URL,
+                                         standards: LanguageStandards = .default) -> (command: Command, output: URL) {
         let url = (source.hasPrefix("/") ? URL(fileURLWithPath: source) : root.appendingPathComponent(source)).standardizedFileURL
         let ext = url.pathExtension.lowercased()
         let output = buildDirectory.appendingPathComponent(url.deletingPathExtension().lastPathComponent)
         let isC = ext == "c"
-        var args = isC ? ["-std=c17"] : (ext == "m" ? [] : ["-std=c++20"])
-        args += ["-g", "-O0", "-Wall", "-Wextra", "-fno-color-diagnostics"]
+        let extra = compileFlags()
+        var args: [String] = []
+        if !extra.contains(where: { $0.hasPrefix("-std=") }), ext != "m" {
+            args.append("-std=" + (isC ? standards.c : standards.cxx))
+        }
+        args += ["-g", "-O0", "-Wall", "-Wextra", "-fno-color-diagnostics"] + extra
         if ext == "m" || ext == "mm" { args += ["-fobjc-arc", "-framework", "Foundation"] }
         // Relative paths keep compiler messages short (`main.cpp:3:5: error: …`) and clickable.
         let rootPath = root.canonicalFileURL.path + "/"
@@ -172,6 +179,14 @@ public struct CppProject: Sendable {
                  "-o", "build/" + output.lastPathComponent]
         let compiler = isC || ext == "m" ? cCompiler : cxxCompiler
         return (Command(executable: compiler, arguments: args, directory: root), output)
+    }
+
+    /// Flags from `compile_flags.txt` at the project root, one per line (as clangd reads them).
+    public func compileFlags() -> [String] {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("compile_flags.txt"), encoding: .utf8) else { return [] }
+        return text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
     }
 
     /// The program a run configuration launches, once built.
@@ -223,6 +238,32 @@ public enum CMakeFileAPI {
         if !FileManager.default.fileExists(atPath: query.path) {
             FileManager.default.createFile(atPath: query.path, contents: Data())
         }
+    }
+
+    /// Executable targets that compile `source`, as their artifact paths.
+    public static func executables(withSource source: URL, root: URL, buildDirectory: URL) -> [URL] {
+        let reply = buildDirectory.appendingPathComponent(".cmake/api/v1/reply")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: reply.path) else { return [] }
+        let wanted = source.canonicalFileURL.path
+        let rootURL = root.canonicalFileURL
+        var found: [URL] = []
+        for file in files where file.hasPrefix("target-") && file.hasSuffix(".json") {
+            guard let data = try? Data(contentsOf: reply.appendingPathComponent(file)),
+                  let json = try? JSONDecoder().decode(JSONValue.self, from: data),
+                  json["type"]?.stringValue == "EXECUTABLE",
+                  let path = json["artifacts"]?[0]?["path"]?.stringValue,
+                  let sources = json["sources"]?.arrayValue else { continue }
+            // Source paths are relative to the top-level source directory (or absolute).
+            let matches = sources.contains { entry in
+                guard let p = entry["path"]?.stringValue else { return false }
+                let url = p.hasPrefix("/") ? URL(fileURLWithPath: p) : rootURL.appendingPathComponent(p)
+                return url.canonicalFileURL.path == wanted
+            }
+            if matches {
+                found.append(path.hasPrefix("/") ? URL(fileURLWithPath: path) : buildDirectory.appendingPathComponent(path))
+            }
+        }
+        return found
     }
 
     public static func artifact(named name: String, buildDirectory: URL) -> URL? {

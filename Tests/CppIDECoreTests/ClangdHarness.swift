@@ -13,7 +13,7 @@ final class ClangdSession: @unchecked Sendable {
     private(set) var initializeResult: JSONValue = .null
     private let base: URL
 
-    init(files: [String: String]) throws {
+    init(files: [String: String], compilationDatabase: Bool = true) throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("cppide-clangd-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         dir = base.canonicalFileURL
@@ -22,7 +22,7 @@ final class ClangdSession: @unchecked Sendable {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try text.write(to: url, atomically: true, encoding: .utf8)
         }
-        try writeCompilationDatabase(in: dir, files: Array(files.keys))
+        if compilationDatabase { try writeCompilationDatabase(in: dir, files: Array(files.keys)) }
     }
 
     deinit { try? FileManager.default.removeItem(at: base) }
@@ -31,7 +31,8 @@ final class ClangdSession: @unchecked Sendable {
     func uri(_ name: String) -> JSONValue { .string(url(name).absoluteString) }
 
     /// Starts clangd and sends initialize/initialized.
-    func start(capabilities: JSONValue = [:], onNotification: LSPClient.NotificationHandler? = nil) async throws {
+    func start(capabilities: JSONValue = [:], initializationOptions: JSONValue = ClangdSettings.default,
+               onNotification: LSPClient.NotificationHandler? = nil) async throws {
         client.onNotification = onNotification
         try client.start(executable: try #require(ToolLocator.find("clangd")), arguments: ClangdSettings.arguments,
                          environment: ToolLocator.environment(), currentDirectory: dir)
@@ -39,15 +40,15 @@ final class ClangdSession: @unchecked Sendable {
             "processId": .int(Int(getpid())),
             "rootUri": .string(dir.absoluteString),
             "capabilities": capabilities,
-            "initializationOptions": ClangdSettings.default,
+            "initializationOptions": initializationOptions,
         ])
         try client.notify("initialized", params: [:])
     }
 
-    func open(_ name: String) throws {
+    func open(_ name: String, dialect: SourceDialect = .mixed) throws {
         let text = try String(contentsOf: url(name), encoding: .utf8)
         try client.notify("textDocument/didOpen", params: [
-            "textDocument": ["uri": uri(name), "languageId": .string(SourceKind.languageID(for: url(name))),
+            "textDocument": ["uri": uri(name), "languageId": .string(SourceKind.languageID(for: url(name), dialect: dialect)),
                              "version": 1, "text": .string(text)],
         ])
     }
